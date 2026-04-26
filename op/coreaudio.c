@@ -247,11 +247,18 @@ static int coreaudio_max_volume = 100;
 static AudioDeviceID coreaudio_device_id = kAudioDeviceUnknown;
 static AudioStreamBasicDescription coreaudio_format_description;
 static AudioUnit coreaudio_audio_unit = NULL;
-static UInt32 coreaudio_buffer_frame_size = 1;
+static int coreaudio_buffer_frame_size = 1;
 static coreaudio_ring_buffer_t coreaudio_ring_buffer = {0, 0, 0, 0, 0, NULL};
 static UInt32 coreaudio_stereo_channels[2];
 static int coreaudio_mixer_pipe_in = 0;
 static int coreaudio_mixer_pipe_out = 0;
+static int coreaudio_input_frame_size = 0;
+static int coreaudio_output_frame_size = 0;
+static int coreaudio_convert_s24_to_s32 = 0;
+static int coreaudio_convert_big_endian = 0;
+static int coreaudio_convert_channels = 0;
+static char *coreaudio_convert_buffer = NULL;
+static size_t coreaudio_convert_buffer_size = 0;
 
 static OSStatus coreaudio_device_volume_change_listener(AudioObjectID inObjectID,
 							UInt32 inNumberAddresses,
@@ -270,9 +277,11 @@ static OSStatus coreaudio_play_callback(void *user_data,
 					AudioBufferList *buflist)
 {
 	int count = nframes * coreaudio_format_description.mBytesPerFrame;
-	buflist->mBuffers[0].mDataByteSize = coreaudio_ring_buffer_read(&coreaudio_ring_buffer,
-									buflist->mBuffers[0].mData,
-									count);
+	char *buf = buflist->mBuffers[0].mData;
+	size_t read = coreaudio_ring_buffer_read(&coreaudio_ring_buffer, buf, count);
+	if (read < count)
+		memset(buf + read, 0, count - read);
+	buflist->mBuffers[0].mDataByteSize = count;
  	return noErr;
 }
 
@@ -426,6 +435,57 @@ static AudioStreamBasicDescription coreaudio_fill_format_description(sample_form
 	return desc;
 }
 
+static sample_format_t coreaudio_output_sf(sample_format_t sf)
+{
+	if (sf_get_bits(sf) == 24 && sf_get_signed(sf))
+		sf = (sf & ~SF_BITS_MASK) | sf_bits(32);
+	return sf;
+}
+
+static int32_t coreaudio_read_s24(const char *buf, int big_endian)
+{
+	const unsigned char *b = (const unsigned char *)buf;
+	uint32_t u;
+
+	if (big_endian)
+		u = (b[0] << 16) | (b[1] << 8) | b[2];
+	else
+		u = b[0] | (b[1] << 8) | (b[2] << 16);
+	if (u & 0x800000)
+		u |= 0xff000000;
+	return (int32_t)u;
+}
+
+static void coreaudio_write_s32(char *buf, int32_t sample, int big_endian)
+{
+	uint32_t u = (uint32_t)(sample * 256);
+
+	if (big_endian) {
+		buf[0] = u >> 24;
+		buf[1] = u >> 16;
+		buf[2] = u >> 8;
+		buf[3] = u;
+	} else {
+		buf[0] = u;
+		buf[1] = u >> 8;
+		buf[2] = u >> 16;
+		buf[3] = u >> 24;
+	}
+}
+
+static void coreaudio_convert_s24_buffer(char *dst, const char *src, int frames)
+{
+	int samples = frames * coreaudio_convert_channels;
+
+	while (samples--) {
+		coreaudio_write_s32(dst,
+				    coreaudio_read_s24(src, coreaudio_convert_big_endian),
+				    coreaudio_convert_big_endian);
+		src += 3;
+		dst += 4;
+	}
+}
+
 static void coreaudio_sync_device_sample_rate(AudioDeviceID dev_id, AudioStreamBasicDescription desc)
 {
 	AudioObjectPropertyAddress aopa = {
@@ -529,6 +589,7 @@ static void coreaudio_hog_device(AudioDeviceID dev_id, bool hog)
 static OSStatus coreaudio_set_buffer_size(AudioUnit au, AudioStreamBasicDescription desc, int *frame_size)
 {
 	AudioValueRange value_range = {0, 0};
+	int min_buffer_size;
 	UInt32 property_size = sizeof(AudioValueRange);
 	OSStatus err = AudioUnitGetProperty(au,
 					    kAudioDevicePropertyBufferFrameSizeRange,
@@ -562,6 +623,9 @@ static OSStatus coreaudio_set_buffer_size(AudioUnit au, AudioStreamBasicDescript
 	}
 
 	buffer_frame_size *= desc.mBytesPerFrame;
+	min_buffer_size = desc.mSampleRate * desc.mBytesPerFrame / 2;
+	if (buffer_frame_size < min_buffer_size)
+		buffer_frame_size = min_buffer_size;
 
 	// We set the frame size to a power of two integer that
 	// is larger than buffer_frame_size.
@@ -644,7 +708,7 @@ static OSStatus coreaudio_start_audio_unit(AudioUnit *au,
 	if (err != noErr)
 		return err;
 
-	return AudioOutputUnitStart(*au);
+	return noErr;
 }
 
 static int coreaudio_init(void)
@@ -689,8 +753,16 @@ static int coreaudio_exit(void)
 
 static int coreaudio_open(sample_format_t sf, const channel_position_t *channel_map)
 {
+	sample_format_t output_sf = coreaudio_output_sf(sf);
 
-	coreaudio_format_description = coreaudio_fill_format_description(sf);
+	coreaudio_input_frame_size = sf_get_frame_size(sf);
+	coreaudio_output_frame_size = sf_get_frame_size(output_sf);
+	coreaudio_convert_s24_to_s32 = sf_get_bits(sf) == 24 && sf_get_signed(sf);
+	coreaudio_convert_big_endian = sf_get_bigendian(sf);
+	coreaudio_convert_channels = sf_get_channels(sf);
+	coreaudio_buffer_frame_size = 1;
+
+	coreaudio_format_description = coreaudio_fill_format_description(output_sf);
 	if (coreaudio_opt_sync_rate)
 		coreaudio_sync_device_sample_rate(coreaudio_device_id, coreaudio_format_description);
 	if (channel_map)
@@ -703,6 +775,11 @@ static int coreaudio_open(sample_format_t sf, const channel_position_t *channel_
 	if (err)
 		return -OP_ERROR_SAMPLE_FORMAT;
 	coreaudio_ring_buffer_init(&coreaudio_ring_buffer, coreaudio_buffer_frame_size);
+	err = AudioOutputUnitStart(coreaudio_audio_unit);
+	if (err) {
+		coreaudio_ring_buffer_destroy(&coreaudio_ring_buffer);
+		return -OP_ERROR_SAMPLE_FORMAT;
+	}
 	return OP_ERROR_SUCCESS;
 }
 
@@ -711,6 +788,9 @@ static int coreaudio_close(void)
 	AudioOutputUnitStop(coreaudio_audio_unit);
 	AudioUnitUninitialize(coreaudio_audio_unit);
 	coreaudio_ring_buffer_destroy(&coreaudio_ring_buffer);
+	free(coreaudio_convert_buffer);
+	coreaudio_convert_buffer = NULL;
+	coreaudio_convert_buffer_size = 0;
 	return OP_ERROR_SUCCESS;
 }
 
@@ -722,6 +802,30 @@ static int coreaudio_drop(void)
 
 static int coreaudio_write(const char *buf, int cnt)
 {
+	if (coreaudio_convert_s24_to_s32) {
+		int frames = cnt / coreaudio_input_frame_size;
+		int writable_frames = coreaudio_ring_buffer_write_available(&coreaudio_ring_buffer) /
+			coreaudio_output_frame_size;
+		int out_count;
+		int written;
+
+		if (frames > writable_frames)
+			frames = writable_frames;
+		if (frames == 0)
+			return 0;
+
+		out_count = frames * coreaudio_output_frame_size;
+		if ((size_t)out_count > coreaudio_convert_buffer_size) {
+			coreaudio_convert_buffer = xrenew(char, coreaudio_convert_buffer, out_count);
+			coreaudio_convert_buffer_size = out_count;
+		}
+		coreaudio_convert_s24_buffer(coreaudio_convert_buffer, buf, frames);
+		written = coreaudio_ring_buffer_write(&coreaudio_ring_buffer,
+						      coreaudio_convert_buffer,
+						      out_count);
+		return written / coreaudio_output_frame_size * coreaudio_input_frame_size;
+	}
+
 	return coreaudio_ring_buffer_write(&coreaudio_ring_buffer, buf, cnt);
 }
 
@@ -900,7 +1004,11 @@ static int coreaudio_unpause(void)
 
 static int coreaudio_buffer_space(void)
 {
-	return coreaudio_ring_buffer_write_available(&coreaudio_ring_buffer);
+	int space = coreaudio_ring_buffer_write_available(&coreaudio_ring_buffer);
+
+	if (coreaudio_convert_s24_to_s32)
+		return space / coreaudio_output_frame_size * coreaudio_input_frame_size;
+	return space;
 }
 
 static int coreaudio_set_sync_sample_rate(const char *val)
