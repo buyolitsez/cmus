@@ -35,7 +35,7 @@ mpris.o: CFLAGS += $(LIBSYSTEMD_CFLAGS)
 cmus-y := \
 	ape.o browser.o buffer.o cache.o channelmap.o cmdline.o cmus.o command_mode.o \
 	comment.o convert.lo cue.o cue_utils.o debug.o discid.o editable.o expr.o \
-	filters.o format_print.o gbuf.o glob.o help.o history.o http.o id3.o input.o \
+	filters.o format_print.o gbuf.o glob.o help.o history.o http.o id3.o input.o lastfm_loved.o \
 	job.o keys.o keyval.o lib.o load_dir.o locking.o mergesort.o misc.o options.o \
 	output.o pcm.o player.o play_queue.o pl.o pl_env.o rbtree.o read_wrapper.o \
 	search_mode.o search.o server.o spawn.o tabexp_file.o tabexp.o track_info.o \
@@ -50,6 +50,15 @@ cmus: $(cmus-y) file.o path.o prog.o xmalloc.o
 
 cmus-remote: main.o file.o misc.o path.o prog.o xmalloc.o xstrjoin.o
 	$(call cmd,ld,$(COMPAT_LIBS))
+
+test-lastfm-loved-y := tests/lastfm_loved.o lastfm_loved.o file.o gbuf.o uchar.o xmalloc.o
+
+tests/lastfm_loved: $(test-lastfm-loved-y)
+	$(call cmd,ld,)
+
+.PHONY: test-lastfm-loved
+test-lastfm-loved: tests/lastfm_loved
+	./tests/lastfm_loved
 
 # cygwin compat
 DLLTOOL=dlltool
@@ -267,7 +276,7 @@ quiet_cmd_ttman = MAN    $@
 
 data		= $(wildcard data/*)
 
-clean		+= *.o ip/*.lo op/*.lo ip/*.so op/*.so *.lo cmus libcmus.a cmus.def cmus.base cmus.exp cmus-remote Doc/*.o Doc/ttman Doc/*.1 Doc/*.7 .install.log
+clean		+= *.o ip/*.lo op/*.lo ip/*.so op/*.so *.lo cmus libcmus.a cmus.def cmus.base cmus.exp cmus-remote tests/lastfm_loved tests/*.o Doc/*.o Doc/ttman Doc/*.1 Doc/*.7 .install.log
 distclean	+= .version config.mk config/*.h tags
 
 main: cmus cmus-remote

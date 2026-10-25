@@ -31,6 +31,7 @@
 #include "output.h"
 #include "utils.h"
 #include "lib.h"
+#include "lastfm_loved.h"
 #include "pl.h"
 #include "xmalloc.h"
 #include "xstrjoin.h"
@@ -297,6 +298,7 @@ enum {
 	TF_PART,
 	TF_SUBTITLE,
 	TF_MEDIA,
+	TF_LASTFM_LOVED,
 	TF_VA,
 	TF_STATUS,
 	TF_POSITION,
@@ -357,6 +359,7 @@ static struct format_option track_fopts[NR_TFS + 1] = {
 	DEF_FO_STR('\0', "part", 0),
 	DEF_FO_STR('\0', "subtitle", 0),
 	DEF_FO_STR('\0', "media", 0),
+	DEF_FO_INT('\0', "lastfm_loved", 0),
 	DEF_FO_INT('\0', "va", 0),
 	DEF_FO_STR('\0', "status", 0),
 	DEF_FO_TIME('\0', "position", 0),
@@ -529,6 +532,7 @@ static inline void fopt_set_time(struct format_option *fopt, int value, int empt
 static void fill_track_fopts_track_info(struct track_info *info)
 {
 	char *filename;
+	int loved;
 
 	if (using_utf8) {
 		filename = info->filename;
@@ -573,6 +577,8 @@ static void fill_track_fopts_track_info(struct track_info *info)
 	fopt_set_str(&track_fopts[TF_PART], keyvals_get_val(info->comments, "discnumber"));
 	fopt_set_str(&track_fopts[TF_SUBTITLE], keyvals_get_val(info->comments, "subtitle"));
 	fopt_set_str(&track_fopts[TF_MEDIA], info->media);
+	loved = lastfm_loved_match(info->artist, info->title);
+	fopt_set_int(&track_fopts[TF_LASTFM_LOVED], loved, !loved);
 	fopt_set_int(&track_fopts[TF_VA], 0, !track_is_compilation(info->comments));
 	if (is_http_url(info->filename)) {
 		fopt_set_str(&track_fopts[TF_FILE], filename);
@@ -615,6 +621,7 @@ static void fill_track_fopts_album(struct album *album)
 	fopt_set_str(&track_fopts[TF_ALBUMARTIST], album->artist->name);
 	fopt_set_str(&track_fopts[TF_ARTIST], album->artist->name);
 	fopt_set_str(&track_fopts[TF_ALBUM], album->name);
+	fopt_set_int(&track_fopts[TF_LASTFM_LOVED], 0, 1);
 	int duration = get_album_length(album);
 	fopt_set_time(&track_fopts[TF_DURATION], duration, 0);
 	fopt_set_time(&track_fopts[TF_ALBUMDURATION], duration, 0);
@@ -625,6 +632,7 @@ static void fill_track_fopts_artist(struct artist *artist)
 	const char *name = display_artist_sort_name ? artist_sort_name(artist) : artist->name;
 	fopt_set_str(&track_fopts[TF_ARTIST], name);
 	fopt_set_str(&track_fopts[TF_ALBUMARTIST], name);
+	fopt_set_int(&track_fopts[TF_LASTFM_LOVED], 0, 1);
 	fopt_set_time(&track_fopts[TF_DURATION], get_artist_length(artist), 0);
 }
 
@@ -632,6 +640,8 @@ const struct format_option *get_global_fopts(void)
 {
 	if (player_info.ti)
 		fill_track_fopts_track_info(player_info.ti);
+	else
+		fopt_set_int(&track_fopts[TF_LASTFM_LOVED], 0, 1);
 
 	static const char *status_strs[] = { ".", ">", "|" };
 	static const char *cont_strs[] = { " ", "C" };
@@ -2535,6 +2545,7 @@ static void exit_all(void)
 	if (resume_cmus)
 		resume_exit();
 	options_exit();
+	lastfm_loved_clear();
 
 	server_exit();
 	cmus_exit();

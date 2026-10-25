@@ -25,6 +25,7 @@
 #include "utils.h"
 #include "debug.h"
 #include "path.h"
+#include "convert.h"
 #include "ui_curses.h"
 
 #include <string.h>
@@ -177,6 +178,63 @@ static inline int match_word(const struct track_info *ti, const char *word, unsi
 	       ((flags & TI_MATCH_ALBUMARTIST) && ti->albumartist && u_strcasestr_base(ti->albumartist, word));
 }
 
+static inline int same_search_word(const char *a, const char *b)
+{
+	size_t len = u_strlen(a);
+	return len == u_strlen(b) && u_strncase_equal_base(a, b, len);
+}
+
+static int count_text_matches(const char *text, const char *word, int limit)
+{
+	size_t word_len = u_strlen(word);
+	int count = 0;
+
+	while (count < limit) {
+		char *match = u_strcasestr_base(text, word);
+		if (!match)
+			break;
+		count++;
+		for (size_t i = 0; i < word_len; i++) {
+			int idx = 0;
+			u_get_char(match, &idx);
+			match += idx;
+		}
+		text = match;
+	}
+	return count;
+}
+
+static int count_filename_matches(const char *filename, const char *word, int limit)
+{
+	char *utf8_filename = NULL;
+	int count;
+
+	if (!using_utf8) {
+		if (utf8_encode(filename, charset, &utf8_filename) != 0)
+			return u_strcasestr_filename(filename, word) ? 1 : 0;
+		filename = utf8_filename;
+	}
+	count = count_text_matches(filename, word, limit);
+	free(utf8_filename);
+	return count;
+}
+
+static int count_word_matches(const struct track_info *ti, const char *word,
+		unsigned int flags, int limit)
+{
+	int count = 0;
+
+	if ((flags & TI_MATCH_ARTIST) && ti->artist)
+		count += count_text_matches(ti->artist, word, limit - count);
+	if ((flags & TI_MATCH_ALBUM) && ti->album && count < limit)
+		count += count_text_matches(ti->album, word, limit - count);
+	if ((flags & TI_MATCH_TITLE) && ti->title && count < limit)
+		count += count_text_matches(ti->title, word, limit - count);
+	if ((flags & TI_MATCH_ALBUMARTIST) && ti->albumartist && count < limit)
+		count += count_text_matches(ti->albumartist, word, limit - count);
+	return count;
+}
+
 static inline int flags_set(const struct track_info *ti, unsigned int flags)
 {
 	return ((flags & TI_MATCH_ARTIST) && ti->artist) ||
@@ -185,19 +243,53 @@ static inline int flags_set(const struct track_info *ti, unsigned int flags)
 	       ((flags & TI_MATCH_ALBUMARTIST) && ti->albumartist);
 }
 
+/* A spaced spelling such as "t e l e p a t h" is one literal phrase. */
+static int is_spaced_phrase_search(char **words)
+{
+	int i;
+
+	for (i = 0; words[i]; i++) {
+		if (u_strlen_safe(words[i]) != 1)
+			return 0;
+	}
+	return i > 1;
+}
+
 int track_info_matches_full(const struct track_info *ti, const char *text,
 		unsigned int flags, unsigned int exclude_flags, int match_all_words)
 {
 	char **words;
+	int spaced_phrase_search;
 	int i, matched = 0;
 
 	words = get_words(text);
+	spaced_phrase_search = is_spaced_phrase_search(words);
 	for (i = 0; words[i]; i++) {
-		const char *word = words[i];
+		const char *word = spaced_phrase_search ? text : words[i];
+		int required_matches = 1;
+		int first_occurrence = 1;
+
+		if (!spaced_phrase_search && match_all_words) {
+			for (int j = 0; j < i; j++) {
+				if (same_search_word(words[j], word)) {
+					first_occurrence = 0;
+					break;
+				}
+			}
+			if (!first_occurrence)
+				continue;
+			for (int j = i + 1; words[j]; j++) {
+				if (same_search_word(words[j], word))
+					required_matches++;
+			}
+		}
 
 		matched = 0;
 		if (flags_set(ti, flags)) {
-			matched = match_word(ti, word, flags);
+			if (required_matches > 1)
+				matched = count_word_matches(ti, word, flags, required_matches) == required_matches;
+			else
+				matched = match_word(ti, word, flags);
 		} else {
 			/* compare with url or filename without path */
 			const char *filename = ti->filename;
@@ -205,14 +297,15 @@ int track_info_matches_full(const struct track_info *ti, const char *text,
 			if (!is_url(filename))
 				filename = path_basename(filename);
 
-			if (u_strcasestr_filename(filename, word))
+			if ((required_matches > 1 && count_filename_matches(filename, word, required_matches) == required_matches) ||
+				(required_matches == 1 && u_strcasestr_filename(filename, word)))
 				matched = 1;
 		}
 
 		if (match_word(ti, word, exclude_flags))
 			matched = 0;
 
-		if (match_all_words ? !matched : matched)
+		if (spaced_phrase_search || (match_all_words ? !matched : matched))
 			break;
 
 	}

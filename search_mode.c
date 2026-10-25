@@ -201,6 +201,7 @@ void search_mode_ch(uchar ch)
 		} else {
 			/* start from beginning if this is first char */
 			int beginning = search_resets_position && search_line_empty();
+			int trailing_space = ch == ' ' && cmdline.cpos == cmdline.clen;
 
 			/* save old value
 			 *
@@ -211,7 +212,8 @@ void search_mode_ch(uchar ch)
 
 			cmdline_insert_ch(ch);
 			parse_line(&text, &search_restricted);
-			search(searchable, text, search_direction, beginning);
+			if (!trailing_space)
+				search(searchable, text, search_direction, beginning);
 
 			/* restore old value */
 			search_restricted = restricted;

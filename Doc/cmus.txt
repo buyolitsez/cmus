@@ -1086,6 +1086,13 @@ format_playlist_va [`Format String`]
 
 	Note: If empty, *format_playlist* is used instead.
 
+lastfm_loved_file () [file]
+	Path to a NUL-delimited cache of Last.fm loved tracks. Each record is an
+	artist followed by a title. The *lastfm_loved* format key is true only for
+	a case-insensitive artist/title match. Setting this option reloads the cache;
+	if the new file is invalid or unreadable, cmus keeps the previously loaded
+	cache.
+
 format_statusline [`Format String`]
 	Format string for status line.
 
@@ -1378,6 +1385,7 @@ Special Keys:
 	%d  %{duration}		@br
 	%f  %{path}		@br
 	%F  %{filename}		@br
+	    %{lastfm_loved}	@br
 	    %{albumduration}    @br
 	    %{originaldate}	@br
 	    %{maxdate}		@br
@@ -1427,6 +1435,7 @@ Its keys are:
 	format strings' special keys @br
 	configuration options @br
 	keyword *stream* [boolean] (returns true if track is a stream) @br
+	keyword *lastfm_loved* [boolean] (returns true if the track is in *lastfm_loved_file*) @br
 	keyword *va* [boolean] (returns true if track's album is compilation)
 Else part can be skipped. A and B can contain string literals in *"* or *'*.
 A and B can be empty.
@@ -1439,6 +1448,7 @@ Examples:
 	:set format_current= %a - %l%! - %02n. %t%= %{bitrate}Kbps %g %y
 	:set format_playlist= %f%= %6{rg_track_gain} dB  %8{rg_track_peak}
 	:set format_playlist= %-25%a %-15%l %3n. %t%= %y %d
+	:set format_playlist= %-25%a %-15%l %3n. %t%= %y %{?lastfm_loved?♥?♡} %d
 	@endpre
 
 @h2 Sort Keys
