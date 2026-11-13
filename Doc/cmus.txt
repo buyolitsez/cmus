@@ -892,6 +892,10 @@ aaa_mode (all) [all, artist, album]
 	For example, if set to *artist*, the player behaves like there were only
 	the files of the currently playing artist in the library.
 
+added_local_copy (ask) [ask, delete, keep]
+	What contrib/cmus-b2-add does with the local copy of an album once it is
+	uploaded to the bucket: ask, delete it, or keep it as downloaded.
+
 altformat_current [`Format String`]
 	Alternative format string for the line displaying currently playing
 	track.

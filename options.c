@@ -823,6 +823,27 @@ static void toggle_aaa_mode(void *data)
 	update_statusline();
 }
 
+/* what contrib/cmus-b2-add does with the local copy of an uploaded album */
+static int added_local_copy;
+static const char * const added_local_copy_names[] = {
+	"ask", "delete", "keep", NULL
+};
+
+static void get_added_local_copy(void *data, char *buf, size_t size)
+{
+	strscpy(buf, added_local_copy_names[added_local_copy], size);
+}
+
+static void set_added_local_copy(void *data, const char *buf)
+{
+	parse_enum(buf, 0, 2, added_local_copy_names, &added_local_copy);
+}
+
+static void toggle_added_local_copy(void *data)
+{
+	added_local_copy = (added_local_copy + 1) % 3;
+}
+
 static void get_repeat(void *data, char *buf, size_t size)
 {
 	strscpy(buf, bool_names[repeat], size);
@@ -1631,6 +1652,7 @@ static const struct {
 	unsigned int flags;
 } simple_options[] = {
 	DT(aaa_mode)
+	DT(added_local_copy)
 	DT(auto_reshuffle)
 	DN(buffer_seconds)
 	DN(bucket_dir)
