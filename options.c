@@ -37,6 +37,7 @@
 #include "input.h"
 #include "lastfm_loved.h"
 #include "lyrics.h"
+#include "download.h"
 #include "xstrjoin.h"
 #include "track_info.h"
 #include "cache.h"
@@ -1565,6 +1566,32 @@ static void set_lyrics_program(void *data, const char *buf)
 	update_full();
 }
 
+static void get_bucket_dir(void *data, char *buf, size_t size)
+{
+	if (bucket_dir)
+		strscpy(buf, bucket_dir, size);
+}
+
+static void set_bucket_dir(void *data, const char *buf)
+{
+	free(bucket_dir);
+	bucket_dir = download_dir_option(buf);
+	update_full();
+}
+
+static void get_download_dir(void *data, char *buf, size_t size)
+{
+	if (download_dir)
+		strscpy(buf, download_dir, size);
+}
+
+static void set_download_dir(void *data, const char *buf)
+{
+	free(download_dir);
+	download_dir = download_dir_option(buf);
+	update_full();
+}
+
 static void get_lastfm_loved_file(void *data, char *buf, size_t size)
 {
 	strscpy(buf, lastfm_loved_file, size);
@@ -1606,11 +1633,13 @@ static const struct {
 	DT(aaa_mode)
 	DT(auto_reshuffle)
 	DN(buffer_seconds)
+	DN(bucket_dir)
 	DN(scroll_offset)
 	DN(rewind_offset)
 	DT(confirm_run)
 	DT(continue)
 	DT(continue_album)
+	DN(download_dir)
 	DT(smart_artist_sort)
 	DT(sort_albums_by_name)
 	DN(id3_default_charset)

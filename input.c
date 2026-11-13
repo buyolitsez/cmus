@@ -33,6 +33,7 @@
 #include "ui_curses.h"
 #include "locking.h"
 #include "xstrjoin.h"
+#include "download.h"
 
 #include <unistd.h>
 #include <stdbool.h>
@@ -319,8 +320,10 @@ void ip_load_plugins(void)
 struct input_plugin *ip_new(const char *filename)
 {
 	struct input_plugin *ip = xnew(struct input_plugin, 1);
+	char *local = download_local_copy(filename);
 
-	ip_init(ip, xstrdup(filename));
+	/* a downloaded copy of a bucket track plays without the network */
+	ip_init(ip, local ? local : xstrdup(filename));
 	return ip;
 }
 

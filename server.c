@@ -66,7 +66,9 @@ static int cmd_status(struct client *client)
 {
 	const char *export_options[] = {
 		"aaa_mode",
+		"bucket_dir",
 		"continue",
+		"download_dir",
 		"play_library",
 		"play_sorted",
 		"repeat",

@@ -27,6 +27,8 @@
 #include "list.h"
 #include "ui_curses.h" /* using_utf8, charset */
 #include "convert.h"
+#include "download.h"
+#include "lastfm_loved.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -441,9 +443,11 @@ static const struct {
 	{ "comment",	EXPR_STR	},
 	{ "date",	EXPR_INT	},
 	{ "discnumber", EXPR_INT	},
+	{ "downloaded",	EXPR_BOOL	},
 	{ "duration",	EXPR_INT	},
 	{ "filename",	EXPR_STR	},
 	{ "genre",	EXPR_STR	},
+	{ "lastfm_loved",EXPR_BOOL	},
 	{ "media",	EXPR_STR	},
 	{ "originaldate",EXPR_INT	},
 	{ "play_count", EXPR_INT	},
@@ -1028,6 +1032,10 @@ int expr_eval(struct expr *expr, struct track_info *ti)
 	/* internet radio was removed; kept for filters like !stream */
 	if (strcmp(key, "stream") == 0)
 		return 0;
+	if (strcmp(key, "lastfm_loved") == 0)
+		return lastfm_loved_match(ti->artist, ti->title);
+	if (strcmp(key, "downloaded") == 0)
+		return download_exists(ti->filename);
 	return track_info_has_tag(ti);
 }
 
