@@ -97,6 +97,11 @@ static void add_ti(struct track_info *ti, unsigned int hash)
 	total++;
 }
 
+void cache_add_ti(struct track_info *ti, unsigned int hash)
+{
+	add_ti(ti, hash);
+}
+
 static int valid_cache_entry(const struct cache_entry *e, unsigned int avail)
 {
 	unsigned int min_size = sizeof(*e);

@@ -393,6 +393,12 @@ add [-l] [-p] [-q] [-Q] <file|dir|url|playlist>
 
 	Supported URLs: Shoutcast (`http://`...), CDDA (`cdda://`...).
 
+	A playlist line may carry the tags, so that the file is not read when
+	it is added (useful for files on a network mount, see contrib/cmus-b2):
+	filename, duration in seconds, mtime and then pairs of tag name and
+	value, all separated by tabs. Tags given this way are kept until the
+	file's mtime changes.
+
 	Supported playlist types: plain, .m3u, .pls.
 
 bind [-f] <context> <key> <command>
