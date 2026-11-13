@@ -1738,8 +1738,8 @@ void option_add(const char *name, const void *data, opt_get_cb get,
 
 /* removed from this fork, but still in old autosave files */
 static const char * const removed_options[] = {
-	"device", "icecast_default_charset", "replaygain", "replaygain_limit",
-	"replaygain_preamp", NULL
+	"device", "icecast_default_charset", "input.cdio.priority", "replaygain",
+	"replaygain_limit", "replaygain_preamp", NULL
 };
 
 struct cmus_opt *option_find(const char *name)
