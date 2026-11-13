@@ -191,10 +191,6 @@ static int mp4_open(struct input_plugin_data *ip_data)
 		.decoder = NULL
 	};
 
-	/* http://sourceforge.net/forum/message.php?msg_id=3578887 */
-	if (ip_data->remote)
-		return -IP_ERROR_FUNCTION_NOT_SUPPORTED;
-
 	/* kindly ask mp4v2 to not spam stderr */
 	MP4LogSetLevel(MP4_LOG_NONE);
 

@@ -23,7 +23,6 @@
 #include "../comment.h"
 #include "../file.h"
 #include "../xmalloc.h"
-#include "../read_wrapper.h"
 
 #ifdef HAVE_CONFIG
 #include "../config/mpc.h"
@@ -85,7 +84,7 @@ static mpc_int32_t read_impl(callback_t *data, void *ptr, mpc_int32_t size)
 	struct input_plugin_data *ip_data = get_ip_data(data);
 	int rc;
 
-	rc = read_wrapper(ip_data, ptr, size);
+	rc = read(ip_data->fd, ptr, size);
 	if (rc == -1)
 		return -1;
 	if (rc == 0) {
@@ -121,9 +120,7 @@ static mpc_int32_t get_size_impl(callback_t *data)
 
 static mpc_bool_t canseek_impl(callback_t *data)
 {
-	struct input_plugin_data *ip_data = get_ip_data(data);
-
-	return !ip_data->remote;
+	return 1;
 }
 
 static int mpc_open(struct input_plugin_data *ip_data)
@@ -146,10 +143,8 @@ static int mpc_open(struct input_plugin_data *ip_data)
 	priv = xnew(struct mpc_private, 1);
 	*priv = priv_init;
 
-	if (!ip_data->remote) {
-		priv->file_size = lseek(ip_data->fd, 0, SEEK_END);
-		lseek(ip_data->fd, 0, SEEK_SET);
-	}
+	priv->file_size = lseek(ip_data->fd, 0, SEEK_END);
+	lseek(ip_data->fd, 0, SEEK_SET);
 
 	/* must be before mpc_streaminfo_read() */
 	ip_data->private = priv;

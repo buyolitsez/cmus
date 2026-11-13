@@ -102,11 +102,10 @@ format_print
 
 @h1 EXAMPLES
 
-Add playlists/files/directories/URLs to library view (1 & 2):
+Add playlists/files/directories to library view (1 & 2):
 
 	@pre
-	$ cmus-remote -l music.m3u \\
-	http://live.urn1350.net:8080/urn_high.ogg
+	$ cmus-remote -l music.m3u ~/music
 	@endpre
 
 Load (clear and add) playlist to playlist view (3):

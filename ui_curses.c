@@ -149,7 +149,6 @@ static int cmdline_cursor_x;
 
 static const int default_esc_delay = 25;
 
-static char *title_buf = NULL;
 
 static int in_bracketed_paste = 0;
 
@@ -580,11 +579,7 @@ static void fill_track_fopts_track_info(struct track_info *info)
 	loved = lastfm_loved_match(info->artist, info->title);
 	fopt_set_int(&track_fopts[TF_LASTFM_LOVED], loved, !loved);
 	fopt_set_int(&track_fopts[TF_VA], 0, !track_is_compilation(info->comments));
-	if (is_http_url(info->filename)) {
-		fopt_set_str(&track_fopts[TF_FILE], filename);
-	} else {
-		fopt_set_str(&track_fopts[TF_FILE], path_basename(filename));
-	}
+	fopt_set_str(&track_fopts[TF_FILE], path_basename(filename));
 	fopt_set_int(&track_fopts[TF_BPM], info->bpm, info->bpm == -1);
 }
 
@@ -1389,20 +1384,6 @@ static void do_update_titleline(void)
 
 		use_alt_format = !track_info_has_tag(player_info.ti);
 
-		if (is_http_url(player_info.ti->filename)) {
-			const char *title = get_stream_title();
-
-			if (title != NULL) {
-				free(title_buf);
-				title_buf = to_utf8(title, icecast_default_charset);
-				/*
-				 * StreamTitle overrides radio station name
-				 */
-				use_alt_format = 0;
-				fopt_set_str(&track_fopts[TF_TITLE], title_buf);
-			}
-		}
-
 		if (use_alt_format && *current_alt_format) {
 			format_print(&print_buffer, win_w, current_alt_format, track_fopts);
 		} else {
@@ -1458,35 +1439,6 @@ static void post_update(void)
 			curs_set(0);
 		}
 	}
-}
-
-static const char *get_stream_title_locked(void)
-{
-	static char stream_title[255 * 16 + 1];
-	char *ptr, *title;
-
-	ptr = strstr(player_metadata, "StreamTitle='");
-	if (ptr == NULL)
-		return NULL;
-	ptr += 13;
-	title = ptr;
-	while (*ptr) {
-		if (*ptr == '\'' && *(ptr + 1) == ';') {
-			memcpy(stream_title, title, ptr - title);
-			stream_title[ptr - title] = 0;
-			return stream_title;
-		}
-		ptr++;
-	}
-	return NULL;
-}
-
-const char *get_stream_title(void)
-{
-	player_metadata_lock();
-	const char *rv = get_stream_title_locked();
-	player_metadata_unlock();
-	return rv;
 }
 
 void update_titleline(void)
@@ -1799,21 +1751,13 @@ static int fill_status_program_track_info_args(char **argv, int i, struct player
 {
 	/* returns first free argument index */
 
-	const char *stream_title = NULL;
-	if (player_info.status == PLAYER_STATUS_PLAYING && is_http_url(ti->filename))
-		stream_title = get_stream_title();
-
 	static const char *keys[] = {
 		"artist", "albumartist", "album", "discnumber", "tracknumber", "title",
 		"date",	"musicbrainz_trackid", NULL
 	};
 	int j;
 
-	if (is_http_url(ti->filename)) {
-		argv[i++] = xstrdup("url");
-	} else {
-		argv[i++] = xstrdup("file");
-	}
+	argv[i++] = xstrdup("file");
 	argv[i++] = xstrdup(ti->filename);
 
 	if (track_info_has_tag(ti)) {
@@ -1821,13 +1765,7 @@ static int fill_status_program_track_info_args(char **argv, int i, struct player
 			const char *key = keys[j];
 			const char *val;
 
-			if (strcmp(key, "title") == 0 && stream_title)
-				/*
-				 * StreamTitle overrides radio station name
-				 */
-				val = stream_title;
-			else
-				val = keyvals_get_val(ti->comments, key);
+			val = keyvals_get_val(ti->comments, key);
 
 			if (val) {
 				argv[i++] = xstrdup(key);
@@ -1840,9 +1778,6 @@ static int fill_status_program_track_info_args(char **argv, int i, struct player
 			argv[i++] = xstrdup("duration");
 			argv[i++] = xstrdup(buf);
 		}
-	} else if (stream_title) {
-		argv[i++] = xstrdup("title");
-		argv[i++] = xstrdup(stream_title);
 	}
 
 	if (pi) {
@@ -1993,23 +1928,19 @@ static void update(void)
 	if (player_info.status_changed)
 		mpris_playback_status_changed();
 
-	if (player_info.file_changed || player_info.metadata_changed)
+	if (player_info.file_changed)
 		mpris_metadata_changed();
 
 	/* mpris_metadata_changed() also emits Seeked */
-	if (player_info.position_seeked && !player_info.file_changed &&
-			!player_info.metadata_changed)
+	if (player_info.position_seeked && !player_info.file_changed)
 		mpris_seeked();
 
-	needs_spawn = player_info.status_changed || player_info.file_changed ||
-		player_info.metadata_changed;
+	needs_spawn = player_info.status_changed || player_info.file_changed;
 
 	if (player_info.file_changed) {
 		needs_title_update = 1;
 		needs_status_update = 1;
 	}
-	if (player_info.metadata_changed)
-		needs_title_update = 1;
 	if (player_info.position_changed || player_info.status_changed)
 		needs_status_update = 1;
 	switch (cur_view) {

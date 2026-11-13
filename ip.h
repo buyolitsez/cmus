@@ -47,16 +47,6 @@ enum {
 	IP_ERROR_INVALID_URI,
 	/* sample format not supported */
 	IP_ERROR_SAMPLE_FORMAT,
-	/* wrong disc inserted */
-	IP_ERROR_WRONG_DISC,
-	/* could not read disc */
-	IP_ERROR_NO_DISC,
-	/* error parsing response line / headers */
-	IP_ERROR_HTTP_RESPONSE,
-	/* usually 404 */
-	IP_ERROR_HTTP_STATUS,
-	/* too many redirections */
-	IP_ERROR_HTTP_REDIRECT_LIMIT,
 	/* plugin does not have this option */
 	IP_ERROR_NOT_OPTION,
 	/*  */
@@ -67,18 +57,6 @@ struct input_plugin_data {
 	/* filled by ip-layer */
 	char *filename;
 	int fd;
-
-	unsigned int remote : 1;
-	unsigned int metadata_changed : 1;
-
-	/* shoutcast */
-	int counter;
-	int metaint;
-	char *metadata;
-	char *icy_name;
-	char *icy_genre;
-	char *icy_url;
-	char *icy_br;
 
 	/* filled by plugin */
 	sample_format_t sf;

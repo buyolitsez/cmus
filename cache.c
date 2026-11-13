@@ -442,7 +442,7 @@ static struct track_info *ip_get_ti(const char *filename)
 		ti->bitrate = ip_bitrate(ip);
 		ti->codec = ip_codec(ip);
 		ti->codec_profile = ip_codec_profile(ip);
-		ti->mtime = ip_is_remote(ip) ? -1 : file_get_mtime(filename);
+		ti->mtime = file_get_mtime(filename);
 	}
 	ip_delete(ip);
 	return ti;
@@ -468,7 +468,7 @@ struct track_info *cache_get_ti(const char *filename, int force)
 
 	ti = lookup_cache_entry(filename, hash);
 	if (ti) {
-		if ((!skip_track_info && ti->duration == 0 && !is_http_url(filename)) || force){
+		if ((!skip_track_info && ti->duration == 0) || force) {
 			do_cache_remove_ti(ti, hash);
 			ti = NULL;
 			reload = 1;

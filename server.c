@@ -54,8 +54,6 @@
 int server_socket;
 LIST_HEAD(client_head);
 
-static char *title_buf = NULL;
-
 static union {
 	struct sockaddr sa;
 	struct sockaddr_un un;
@@ -83,7 +81,6 @@ static int cmd_status(struct client *client)
 	GBUF(buf);
 	int vol_left, vol_right;
 	int i, ret;
-	enum player_status status;
 
 	gbuf_addf(&buf, "status %s\n", player_status_names[player_info.status]);
 	ti = player_info.ti;
@@ -95,21 +92,6 @@ static int cmd_status(struct client *client)
 			gbuf_addf(&buf, "tag %s %s\n",
 					ti->comments[i].key,
 					escape(ti->comments[i].val));
-	}
-
-	/* add track metadata to cmus-status */
-	status = player_info.status;
-	if (status == PLAYER_STATUS_PLAYING && ti && is_http_url(player_info.ti->filename)) {
-	const char *title = get_stream_title();
-		if (title != NULL) {
-			free(title_buf);
-			title_buf = to_utf8(title, icecast_default_charset);
-			// we have a stream title (probably artist/track/album info)
-			gbuf_addf(&buf, "stream %s\n", escape(title_buf));
-		} else if (ti->comment != NULL) {
-			// fallback to the radio station name
-			gbuf_addf(&buf, "stream %s\n", escape(ti->comment));
-		}
 	}
 
 	/* output options */

@@ -59,14 +59,12 @@ struct player_info {
 	char *error_msg;
 
 	unsigned int file_changed : 1;
-	unsigned int metadata_changed : 1;
 	unsigned int status_changed : 1;
 	unsigned int position_changed : 1;
 	unsigned int position_seeked : 1;
 	unsigned int buffer_fill_changed : 1;
 };
 
-extern char player_metadata[255 * 16 + 1];
 extern struct player_info player_info;
 extern int player_cont;
 extern int player_cont_album;
@@ -104,7 +102,5 @@ void player_set_soft_vol(int soft);
 #define VF_PERCENTAGE	0x02
 int player_set_vol(int l, int lf, int r, int rf);
 
-void player_metadata_lock(void);
-void player_metadata_unlock(void);
 
 #endif

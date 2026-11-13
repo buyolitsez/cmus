@@ -18,7 +18,6 @@
 
 #include "../ip.h"
 #include "../xmalloc.h"
-#include "../read_wrapper.h"
 #include "../debug.h"
 #ifdef HAVE_CONFIG
 #include "../config/tremor.h"
@@ -39,7 +38,6 @@
 
 struct vorbis_private {
 	OggVorbis_File vf;
-	int current_section;
 };
 
 /* http://www.xiph.org/vorbis/doc/vorbisfile/callbacks.html */
@@ -49,7 +47,7 @@ static size_t read_func(void *ptr, size_t size, size_t nmemb, void *datasource)
 	struct input_plugin_data *ip_data = datasource;
 	int rc;
 
-	rc = read_wrapper(ip_data, ptr, size * nmemb);
+	rc = read(ip_data->fd, ptr, size * nmemb);
 	if (rc == -1) {
 		d_print("error: %s\n", strerror(errno));
 		return 0;
@@ -157,7 +155,6 @@ static int vorbis_open(struct input_plugin_data *ip_data)
 	int rc;
 
 	priv = xnew(struct vorbis_private, 1);
-	priv->current_section = -1;
 	memset(&priv->vf, 0, sizeof(priv->vf));
 
 	rc = ov_open_callbacks(ip_data, &priv->vf, NULL, 0, callbacks);
@@ -230,11 +227,6 @@ static int vorbis_read(struct input_plugin_data *ip_data, char *buffer, int coun
 #else
 	rc = ov_read(&priv->vf, buffer, count, vorbis_endian(), 2, 1, &current_section);
 #endif
-
-	if (ip_data->remote && current_section != priv->current_section) {
-		ip_data->metadata_changed = 1;
-		priv->current_section = current_section;
-	}
 
 	switch (rc) {
 	case OV_HOLE:

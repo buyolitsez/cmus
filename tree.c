@@ -948,17 +948,11 @@ void tree_add_track(struct tree_track *track,
 	if (date < 0)
 		date = ti->date;
 
-	if (is_http_url(ti->filename)) {
-		artist_name = "<Stream>";
-		album_name = "<Stream>";
-	} else {
-		album_name	= tree_album_name(ti);
-		artist_name	= tree_artist_name(ti);
-		artistsort_name	= ti->artistsort;
-		albumsort_name	= ti->albumsort;
-
-		is_va_compilation = ti->is_va_compilation;
-	}
+	album_name	= tree_album_name(ti);
+	artist_name	= tree_artist_name(ti);
+	artistsort_name	= ti->artistsort;
+	albumsort_name	= ti->albumsort;
+	is_va_compilation = ti->is_va_compilation;
 
 	new_artist = artist_new(artist_name, artistsort_name, is_va_compilation);
 	album = NULL;

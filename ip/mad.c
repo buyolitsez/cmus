@@ -21,7 +21,6 @@
 #include "../id3.h"
 #include "../ape.h"
 #include "../xmalloc.h"
-#include "../read_wrapper.h"
 #include "../debug.h"
 #include "../utils.h"
 #include "../comment.h"
@@ -41,7 +40,7 @@ static ssize_t read_func(void *datasource, void *buffer, size_t count)
 {
 	struct input_plugin_data *ip_data = datasource;
 
-	return read_wrapper(ip_data, buffer, count);
+	return read(ip_data->fd, buffer, count);
 }
 
 static off_t lseek_func(void *datasource, off_t offset, int whence)

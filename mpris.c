@@ -372,12 +372,6 @@ static int mpris_uri_path_char_ok(unsigned char c)
 		c == '_' || c == '~' || c == '/';
 }
 
-static int mpris_uri_url_char_ok(unsigned char c)
-{
-	/* leave an existing URL unmodified except for illegal chars */
-	return c > 0x20 && c < 0x7f && !strchr("\"<>\\^`{|}", c);
-}
-
 /**
  * Build a URI from a cmus filename by prepending prefix and percent-encoding it
  * according to the provided callback. The filename should not be sanitized to
@@ -410,10 +404,6 @@ static char *mpris_escape_uri(const char *prefix, const char *src,
 
 static char *mpris_track_uri(const char *filename)
 {
-	/* urls are already escaped, so just remove illegal chars */
-	if (is_http_url(filename))
-		return mpris_escape_uri("", filename, mpris_uri_url_char_ok);
-
 	/* cmus uses raw paths internally for cue */
 	if (is_cue_url(filename))
 		return mpris_escape_uri("cue://", filename + 6,
@@ -497,9 +487,6 @@ static int mpris_metadata(sd_bus *_bus, const char *_path,
 			free(uri);
 			CK(rc);
 		}
-		if (is_http_url(ti->filename))
-			CK(mpris_msg_append_ss_dict(reply, "cmus:stream_title",
-						get_stream_title()));
 	}
 
 	CK(sd_bus_message_close_container(reply));
