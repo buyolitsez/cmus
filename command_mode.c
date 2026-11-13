@@ -1918,7 +1918,8 @@ static void cmd_browser_up(char *arg)
 static void cmd_refresh(char *arg)
 {
 	clearok(curscr, TRUE);
-	refresh();
+	/* redraw the views too, e.g. after cmus-b2-download */
+	update_full();
 }
 
 static int cmp_intp(const void *ap, const void *bp)

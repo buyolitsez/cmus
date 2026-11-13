@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Download bucket tracks selected in cmus to download_dir.
+
+Bind it in cmus with ":bind common d run cmus-b2-download". cmus passes the
+selected tracks; those under bucket_dir are copied to the same relative path
+under download_dir, which cmus then plays instead of the bucket file. A CUE
+track brings the .cue file and the audio files it names. Runs in the
+background and reports in the cmus command line when done.
+"""
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+
+def cmus(*cmd):
+    return subprocess.run(["cmus-remote", *cmd], capture_output=True, text=True).stdout
+
+
+def option(name):
+    for line in cmus("-Q").splitlines():
+        if line.startswith(f"set {name} "):
+            return line[len(f"set {name} "):]
+    return ""
+
+
+def cue_files(cue):
+    """The audio files a .cue file refers to and the .cue file itself, last,
+    as cmus counts the track downloaded once the .cue file is there."""
+    with open(cue, encoding="utf-8", errors="replace") as f:
+        names = re.findall(r'^\s*FILE\s+"(.+?)"', f.read(), re.M)
+    return [os.path.join(os.path.dirname(cue), n) for n in names] + [cue]
+
+
+def download(src, dst):
+    if os.path.exists(dst):
+        return False
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    # copy2 keeps the mtime, so sync-music.sh does not upload the file again
+    shutil.copy2(src, dst + ".part")
+    os.replace(dst + ".part", dst)
+    return True
+
+
+def main():
+    bucket, local = option("bucket_dir"), option("download_dir")
+    if not bucket or not local:
+        cmus("-C", "echo cmus-b2-download: set bucket_dir and download_dir")
+        return 1
+
+    files = []
+    for f in sys.argv[1:]:
+        if f.startswith("cue://"):
+            files += cue_files(f[len("cue://"):].rsplit("/", 1)[0])
+        else:
+            files.append(f)
+    files = [f for f in dict.fromkeys(files) if f.startswith(bucket + "/")]
+
+    done = failed = 0
+    for f in files:
+        try:
+            done += download(f, local + f[len(bucket):])
+        except OSError:
+            failed += 1
+    msg = f"Downloaded {done} files" + (f", {failed} failed" if failed else "")
+    cmus("-C", "refresh", f"echo {msg}")
+    return 0
+
+
+if __name__ == "__main__":
+    # cmus waits for the command, so the copying goes on in the background
+    if os.fork():
+        sys.exit(0)
+    os.setsid()
+    sys.exit(main())

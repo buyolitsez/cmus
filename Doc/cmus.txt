@@ -595,7 +595,7 @@ rand
 	Randomizes (shuffles) the tracks in the library, playlist or queue view.
 
 refresh (*^L*)
-	Redraws the terminal window.
+	Redraws the terminal window and the views.
 
 reshuffle
 	Reshuffles the shuffle lists for both library and playlist views.
@@ -919,6 +919,11 @@ block_key_paste (true)
 	Prevent accidental input by only accepting pasted text in the command line.
 	Only works on terminals which support bracketed paste.
 
+bucket_dir () [directory]
+	Where the music of the bucket is mounted, e.g. ~/b2music. A track under it
+	that has a local copy under *download_dir* at the same relative path is
+	played from the copy. See contrib/cmus-b2-download.
+
 buffer_seconds (10) [1-300]
 	Size of the player buffer in seconds.
 
@@ -1058,6 +1063,9 @@ display_artist_sort_name (false)
 	If enabled, always displays artist names used for sorting instead of
 	regular ones in tree view (e.g. "Artist, The" instead of "The Artist"),
 	so that artists column looks alphabetically sorted.
+
+download_dir () [directory]
+	Where the local copies of the tracks in *bucket_dir* are, e.g. ~/Music.
 
 follow (false)
 	If enabled, always select the currently playing track on track change.
@@ -1381,6 +1389,7 @@ Special Keys:
 	%f  %{path}		@br
 	%F  %{filename}		@br
 	    %{lastfm_loved}	@br
+	    %{downloaded}	@br
 	    %{albumduration}    @br
 	    %{originaldate}	@br
 	    %{maxdate}		@br
@@ -1431,6 +1440,7 @@ Its keys are:
 	configuration options @br
 	keyword *stream* [boolean] (always false, internet radio was removed) @br
 	keyword *lastfm_loved* [boolean] (returns true if the track is in *lastfm_loved_file*) @br
+	keyword *downloaded* [boolean] (returns true if the track has a local copy in *download_dir*) @br
 	keyword *va* [boolean] (returns true if track's album is compilation)
 Else part can be skipped. A and B can contain string literals in *"* or *'*.
 A and B can be empty.
@@ -1649,7 +1659,9 @@ Ranges: *a-b* (>=a&<=b), *-b* (<=b), *a-* (>=a)
 
 @h2 Booleans
 
-*tag* (true if track has tags), *stream* (always false)
+*tag* (true if track has tags), *stream* (always false), *lastfm_loved* (true
+if the track is in *lastfm_loved_file*), *downloaded* (true if the track has a
+local copy, see *download_dir*)
 @br
 For short expressions: *~T* and *~s*
 

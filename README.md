@@ -117,7 +117,13 @@ Lyrics (view 8, synced LRC lines are highlighted): `:set lyrics_program=<repo>/c
 existing autosave, `:bind common 8 view lyrics`. Bucket tracks use the lyrics `cmus-b2` saved from `lyrics/`, local
 files a `.lrc` next to them or the lyrics tag (needs `python-mutagen`).
 
-Light theme like the app: `:colorscheme b2` (colors and row formats with ♥ for likes).
+Light theme like the app: `:colorscheme b2` (colors and row formats with ♥ for likes and ↓ for downloaded tracks).
+
+Downloading: with `set bucket_dir=~/b2music` and `set download_dir=~/Music`, a bucket track that has a copy at the same
+path under `download_dir` plays from the copy. `:bind common d run <repo>/contrib/cmus-b2-download` copies the selected
+tracks or albums there (in the background, keeping mtimes, so `sync-music.sh` has nothing to upload).
+
+Filters: `H` shows only liked tracks, `A` all tracks again (`:filter lastfm_loved`, `:filter downloaded`, `:filter`).
 
 In `~/.config/cmus/rc`: `set lastfm_loved_file=~/.cache/cmus-b2/likes` (likes from the catalog and `state/likes.json`).
 Run `contrib/cmus-b2` again after the catalog changes; `:update-cache` drops tracks deleted from the bucket.
