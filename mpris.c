@@ -414,12 +414,9 @@ static char *mpris_track_uri(const char *filename)
 	if (is_http_url(filename))
 		return mpris_escape_uri("", filename, mpris_uri_url_char_ok);
 
-	/* cmus uses raw paths internally for cue and cdda */
+	/* cmus uses raw paths internally for cue */
 	if (is_cue_url(filename))
 		return mpris_escape_uri("cue://", filename + 6,
-				mpris_uri_path_char_ok);
-	if (is_cdda_url(filename))
-		return mpris_escape_uri("cdda://", filename + 7,
 				mpris_uri_path_char_ok);
 
 	return mpris_escape_uri("file://", filename, mpris_uri_path_char_ok);

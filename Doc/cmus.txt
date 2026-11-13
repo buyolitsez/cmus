@@ -391,7 +391,7 @@ add [-l] [-p] [-q] [-Q] <file|dir|url|playlist>
 
 	Supported files are based on the loaded input plugins.
 
-	Supported URLs: Shoutcast (`http://`...), CDDA (`cdda://`...).
+	Supported URLs: Shoutcast (`http://`...).
 
 	A playlist line may carry the tags, so that the file is not read when
 	it is added (useful for files on a network mount, see contrib/cmus-b2):
@@ -682,7 +682,7 @@ source <filename>
 
 toggle <option>
 	Toggles the value of a toggle-able option (all booleans and the options
-	*shuffle*, *aaa_mode*, and *replaygain*).
+	*shuffle* and *aaa_mode*).
 
 tqueue [NUM]
 	Queues NUM (default 1) random tracks from the library. See also
@@ -1052,9 +1052,6 @@ continue (true)
 continue_album (true)
 	Continue playing next album after current album finishes.
 
-device (/dev/cdrom)
-	CDDA device file.
-
 display_artist_sort_name (false)
 	If enabled, always displays artist names used for sorting instead of
 	regular ones in tree view (e.g. "Artist, The" instead of "The Artist"),
@@ -1205,17 +1202,6 @@ repeat (false)
 
 repeat_current (false)
 	Repeat current track forever.
-
-replaygain (disabled) [track, album, track-preferred, album-preferred, smart]
-	Enable Replay Gain. The smart setting behaves like track-preferred when
-	shuffle is on, or the queue is active, or when playing from a playlist.
-	Otherwise, it behaves like album-preferred.
-
-replaygain_limit (true)
-	Use replay gain limiting when clipping.
-
-replaygain_preamp (0.0)
-	Replay gain preamplification in decibels.
 
 resume (false)
 	Resume playback on startup.
@@ -1570,11 +1556,6 @@ dsp.aaudio.min_buffer_capacity_ms (0)
 	result in buffer underruns. Higher values result in lower CPU usage, but
 	may make the UI laggy. If left unset, a sensible default is used.
 
-input.cdio.cddb_url
-	CDDB URL (default: freedb.freedb.org:8880). Uses HTTP if prefixed with
-	"http://" (e.g.: http://freedb.musicbrainz.org:80/~cddb/cddb.cgi). Set
-	to an empty string to disable CDDB lookup completely.
-
 input.\*.priority
 	Sets the priority of the input plugin. If multiple plugins can play a
 	file, the plugin with the higher priority is chosen. If the priority is
@@ -1605,26 +1586,6 @@ mixer.sun.channel
 
 mixer.sun.device
 	Mixer device for Sun plugin, usually /dev/mixer.
-
-@h1 PLAYING AUDIO DISCS
-
-If the *cdio* input plugin is enabled, CDs and CD images can be played by
-setting the *device* option to a device file (e.g. /dev/cdrom) or an image file
-(e.g. ~/cd.cue). Then, add a new track using the CDDA URL scheme:
-
-	:add cdda://2
-
-To add the entire disc, use cdda:// (without track number). This only works for
-audio discs, not images. Adding track ranges is also possible (cdda://1-3).
-
-To add images without changing the device option, include the image path in the
-URL:
-
-	:add cdda:///path/to/cd.cue/2-5
-
-The metadata will be read from CD-Text, and if not available, looked up from
-a CDDB server (see *input.cdio.cddb_url*).
-
 
 @h1 FILTERS
 

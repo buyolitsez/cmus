@@ -140,7 +140,6 @@ enum progress_bar_mode {
 
 #define BRIGHT (1 << 3)
 
-extern char *cdda_device;
 extern char *output_plugin;
 extern char *status_display_program;
 extern char *server_password;
