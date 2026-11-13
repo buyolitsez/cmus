@@ -45,6 +45,7 @@
 #include "keys.h"
 #include "debug.h"
 #include "help.h"
+#include "lyrics.h"
 #include "worker.h"
 #include "input.h"
 #include "file.h"
@@ -1169,6 +1170,45 @@ static void update_help_window(void)
 	update_window(help_win, 0, 0, win_w, "Settings", print_help);
 }
 
+static void print_lyrics(struct window *win, int row, struct iter *iter)
+{
+	struct iter sel;
+	int selected;
+	const struct lyrics_line *l = iter_to_lyrics_line(iter);
+
+	window_get_sel(win, &sel);
+	selected = iters_equal(iter, &sel);
+	/* for synced lyrics the selection is the line being sung */
+	bkgdset(pairs[(1 << 2) | (selected << 1) | (selected && l->time_ms >= 0)]);
+	if (selected) {
+		cursor_x = 0;
+		cursor_y = 1 + row;
+	}
+	gbuf_add_ch(&print_buffer, ' ');
+	format_str(&print_buffer, l->text, win_w - 2);
+	gbuf_add_ch(&print_buffer, ' ');
+	dump_print_buffer(row + 1, 0);
+}
+
+static void update_lyrics_window(void)
+{
+	char title[512];
+
+	if (player_info.ti && player_info.ti->title)
+		snprintf(title, sizeof(title), "Lyrics: %s%s%s", player_info.ti->title,
+				player_info.ti->artist ? " · " : "",
+				player_info.ti->artist ? player_info.ti->artist : "");
+	else
+		strscpy(title, "Lyrics", sizeof(title));
+	update_window(lyrics_win, 0, 0, win_w, title, print_lyrics);
+}
+
+static void lyrics_follow_player(void)
+{
+	lyrics_load(player_info.ti ? player_info.ti->filename : NULL);
+	lyrics_set_position(player_info.pos * 1000);
+}
+
 static void update_pl_view(int full)
 {
 	current_track = pl_get_playing_track();
@@ -1210,6 +1250,9 @@ static void do_update_view(int full)
 		break;
 	case HELP_VIEW:
 		update_help_window();
+		break;
+	case LYRICS_VIEW:
+		update_lyrics_window();
 		break;
 	}
 }
@@ -1610,6 +1653,9 @@ void search_not_found(void)
 		case HELP_VIEW:
 			what = "Binding/command/option";
 			break;
+		case LYRICS_VIEW:
+			what = "Line";
+			break;
 		}
 	} else {
 		switch (cur_view) {
@@ -1627,6 +1673,9 @@ void search_not_found(void)
 			break;
 		case HELP_VIEW:
 			what = "Binding/command/option";
+			break;
+		case LYRICS_VIEW:
+			what = "Line";
 			break;
 		}
 	}
@@ -1672,6 +1721,10 @@ void set_view(int view)
 	case HELP_VIEW:
 		searchable = help_searchable;
 		update_help_window();
+		break;
+	case LYRICS_VIEW:
+		searchable = lyrics_searchable;
+		lyrics_follow_player();
 		break;
 	}
 
@@ -1897,6 +1950,7 @@ static void update_window_size(void)
 		window_set_nr_rows(pq_editable.shared->win, h - 1);
 		window_set_nr_rows(filters_win, h - 1);
 		window_set_nr_rows(help_win, h - 1);
+		window_set_nr_rows(lyrics_win, h - 1);
 		window_set_nr_rows(browser_win, h - 1);
 	}
 	clearok(curscr, TRUE);
@@ -1964,6 +2018,11 @@ static void update(void)
 		break;
 	case HELP_VIEW:
 		needs_view_update += help_win->changed;
+		break;
+	case LYRICS_VIEW:
+		if (player_info.file_changed || player_info.position_changed)
+			lyrics_follow_player();
+		needs_view_update += lyrics_win->changed;
 		break;
 	}
 
@@ -2415,6 +2474,7 @@ static void init_all(void)
 	browser_init();
 	filters_init();
 	help_init();
+	lyrics_init();
 	cmdline_init();
 	commands_init();
 	search_mode_init();
@@ -2492,6 +2552,7 @@ static void exit_all(void)
 	search_mode_exit();
 	filters_exit();
 	help_exit();
+	lyrics_exit();
 	browser_exit();
 	mpris_free();
 }

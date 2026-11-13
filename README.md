@@ -113,6 +113,10 @@ systemctl --user enable --now rclone-b2music   # mounts b2music:buyolitsez-music
 contrib/cmus-b2                                # catalog and likes -> ~/.cache/cmus-b2, adds them to a running cmus
 ```
 
+Lyrics (view 8, synced LRC lines are highlighted): `:set lyrics_program=<repo>/contrib/cmus-b2-lyrics` and, with an
+existing autosave, `:bind common 8 view lyrics`. Bucket tracks use the lyrics `cmus-b2` saved from `lyrics/`, local
+files a `.lrc` next to them or the lyrics tag (needs `python-mutagen`).
+
 Light theme like the app: `:colorscheme b2` (colors and row formats with ♥ for likes).
 
 In `~/.config/cmus/rc`: `set lastfm_loved_file=~/.cache/cmus-b2/likes` (likes from the catalog and `state/likes.json`).

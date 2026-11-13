@@ -45,6 +45,7 @@
 #include "debug.h"
 #include "load_dir.h"
 #include "help.h"
+#include "lyrics.h"
 #include "op.h"
 #include "mpris.h"
 #include "job.h"
@@ -352,6 +353,8 @@ struct window *current_win(void)
 		return browser_win;
 	case HELP_VIEW:
 		return help_win;
+	case LYRICS_VIEW:
+		return lyrics_win;
 	case FILTERS_VIEW:
 	default:
 		return filters_win;
