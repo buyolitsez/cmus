@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Add albums from a .torrent to the music library and the B2 bucket.
 
-  cmus-b2-add [file.torrent]    # by default the newest .torrent in ~/Downloads
+  cmus-b2-add [file.torrent]    # by default the newest .torrent with music in ~/Downloads
 
 Shows the torrent's folders and files as a tree to mark what to download, asks
 Claude where each one goes in the music folder (next to the artist's albums if
@@ -11,8 +11,8 @@ the marked files (no seeding), uploads them with sync-music.sh, republishes
 the catalog, refreshes the cmus library and removes the local copy, keeps it
 (cmus plays it as downloaded) or asks, by the cmus option added_local_copy.
 
-In cmus: ":bind common T shell footclient -N cmus-b2-add" opens it in a new
-window. Needs python-libtorrent, python-anthropic and ANTHROPIC_API_KEY
+In cmus: ":bind common T shell footclient -N <repo>/contrib/cmus-b2-add" opens
+it in a new window. Needs python-libtorrent, python-anthropic and ANTHROPIC_API_KEY
 (in the environment or as ANTHROPIC_API_KEY=... in ~/.config/cmus-b2/env).
 """
 import argparse
@@ -245,12 +245,24 @@ def download(info, files, save_path):
     ses.remove_torrent(h)
 
 
+def has_audio(info):
+    fs = info.layout()
+    return any(os.path.splitext(fs.file_path(i))[1].lower() in AUDIO_EXT for i in range(fs.num_files()))
+
+
+def newest_music_torrent():
+    for path in sorted(glob.glob(os.path.expanduser("~/Downloads/*.torrent")), key=os.path.getmtime, reverse=True):
+        if has_audio(lt.torrent_info(path)):
+            return path
+    return None
+
+
 def main():
-    path = a.torrent or max(glob.glob(os.path.expanduser("~/Downloads/*.torrent")), key=os.path.getmtime, default=None)
+    path = a.torrent or newest_music_torrent()
     if not path:
-        sys.exit("No .torrent in ~/Downloads")
+        sys.exit("No .torrent with music in ~/Downloads")
     info = lt.torrent_info(path)
-    fs = info.files()
+    fs = info.layout()
     print(f"Torrent: {os.path.basename(path)}")
 
     picked = curses.wrapper(pick, info.name(), [(i, fs.file_path(i), fs.file_size(i)) for i in range(fs.num_files())
