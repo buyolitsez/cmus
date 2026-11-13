@@ -109,22 +109,26 @@ I am adding albums from the torrent "{torrent_name}". Their folders in the torre
 {listing}</albums>
 
 For each album choose the folder it should have in the library, relative to the library root.
+- If the library already has this album (maybe under another folder name or edition), set "exists" to its
+  folder and "target" to "". Otherwise "exists" is "".
 - If the artist already has a folder, put the album inside it, at the same level and with the same naming
   style as the artist's other albums (for example "YYYY - Title" if the others are named like that).
+  But if the artist's albums sit in a folder copied as is from a torrent (names with Collection, Discography,
+  mp3, FLAC, "1 Albums" and the like), do not repeat that: use "<genre>/<Artist>/YYYY - Title" in that genre.
 - Otherwise make a new artist folder under the genre folder that fits best (top-level folders are genres,
   some have subgenres; ignore service folders such as torrents, unknown, my, copying), and name the album
   folder like most albums in that genre.
 - Use the real artist and album names (from the folder and file names), without release-group tags,
   bitrate or tracker names; keep the year if known.
-- Never choose a folder that already exists in the library as the album folder itself.
+- The target must be a folder that does not exist in the library yet; never add suffixes to make it new.
 Answer with one entry per album, "source" exactly as given."""
     schema = {
         "type": "object",
         "properties": {"albums": {"type": "array", "items": {
             "type": "object",
-            "properties": {"source": {"type": "string"}, "target": {"type": "string"},
+            "properties": {"source": {"type": "string"}, "target": {"type": "string"}, "exists": {"type": "string"},
                            "why": {"type": "string", "description": "a few words, e.g. 'artist exists' or 'new artist in rock'"}},
-            "required": ["source", "target", "why"], "additionalProperties": False}}},
+            "required": ["source", "target", "exists", "why"], "additionalProperties": False}}},
         "required": ["albums"], "additionalProperties": False,
     }
     print("Asking Claude where to put them...")
@@ -136,7 +140,7 @@ Answer with one entry per album, "source" exactly as given."""
     if r.stop_reason != "end_turn":
         sys.exit(f"Claude did not answer ({r.stop_reason})")
     text = next(b.text for b in r.content if b.type == "text")
-    return {x["source"]: (x["target"].strip("/"), x["why"]) for x in json.loads(text)["albums"]}
+    return {x["source"]: (x["target"].strip("/"), x["exists"].strip("/"), x["why"]) for x in json.loads(text)["albums"]}
 
 
 class Node:
@@ -288,11 +292,17 @@ def main():
                                     for src in chosen})
     plan = {}
     for src in chosen:
-        target, why = targets.get(src, ("", "no answer"))
-        print(f"\n{src or info.name()}\n  -> {target}  ({why})")
+        target, exists, why = targets.get(src, ("", "", "no answer"))
+        print(f"\n{src or info.name()}")
+        if exists:  # skipped unless a path is typed
+            print(f"  already in the library: {exists}")
+            prompt = "  Enter: skip, or type a path to add it anyway: "
+        else:
+            print(f"  -> {target}  ({why})")
+            prompt = "  Enter: ok, n: skip, or type another path: "
         while True:
-            ans = ask("  Enter: ok, n: skip, or type another path: ")
-            if ans.lower() == "n":
+            ans = ask(prompt)
+            if ans.lower() == "n" or not ans and exists:
                 break
             target = (ans or target).strip("/")
             if target and not os.path.exists(os.path.join(music, target)):
