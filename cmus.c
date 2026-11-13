@@ -36,7 +36,6 @@
 #include "ui_curses.h"
 #include "cache.h"
 #include "gbuf.h"
-#include "discid.h"
 #include "locking.h"
 #include "pl_env.h"
 
@@ -157,11 +156,6 @@ enum file_type cmus_detect_ft(const char *name, char **ret)
 	if (is_http_url(name) || is_cue_url(name)) {
 		*ret = xstrdup(name);
 		return FILE_TYPE_URL;
-	}
-
-	if (is_cdda_url(name)) {
-		*ret = complete_cdda_url(cdda_device, name);
-		return FILE_TYPE_CDDA;
 	}
 
 	*ret = NULL;

@@ -19,7 +19,7 @@ jobs:
         if: startswith(matrix.os, 'macos-')
         run: |
           brew install \
-            libao ffmpeg libcddb libcdio libcue libdiscid faad2 flac jack mad \
+            libao ffmpeg libcue faad2 flac jack mad \
             libmodplug mp4v2 musepack opusfile libsamplerate libvorbis wavpack \
             pkg-config
       - name: Dependencies (apt)
@@ -28,7 +28,7 @@ jobs:
           sudo apt-get update -qyy
           sudo apt-get install -qyy \
             pkg-config libncursesw5-dev libfaad-dev libao-dev libasound2-dev \
-            libcddb2-dev libcdio-cdda-dev libdiscid-dev libavformat-dev \
+            libavformat-dev \
             libavcodec-dev libswresample-dev libflac-dev libjack-dev \
             libmad0-dev libmodplug-dev libmpcdec-dev libsystemd-dev \
             libopusfile-dev libpulse-dev libsamplerate0-dev libsndio-dev \

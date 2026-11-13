@@ -18,13 +18,12 @@ include scripts/lib.mk
 
 CFLAGS += -D_FILE_OFFSET_BITS=64
 
-CMUS_LIBS = $(PTHREAD_LIBS) $(NCURSES_LIBS) $(ICONV_LIBS) $(DL_LIBS) $(DISCID_LIBS) \
+CMUS_LIBS = $(PTHREAD_LIBS) $(NCURSES_LIBS) $(ICONV_LIBS) $(DL_LIBS) \
 			-lm $(COMPAT_LIBS) $(LIBSYSTEMD_LIBS)
 
 command_mode.o input.o main.o ui_curses.o op/pulse.lo: .version
 command_mode.o input.o main.o ui_curses.o op/pulse.lo: CFLAGS += -DVERSION=\"$(VERSION)\"
 main.o server.o: CFLAGS += -DDEFAULT_PORT=3000
-discid.o: CFLAGS += $(DISCID_CFLAGS)
 mpris.o: CFLAGS += $(LIBSYSTEMD_CFLAGS)
 
 .version: Makefile
@@ -34,7 +33,7 @@ mpris.o: CFLAGS += $(LIBSYSTEMD_CFLAGS)
 # programs {{{
 cmus-y := \
 	ape.o browser.o buffer.o cache.o channelmap.o cmdline.o cmus.o command_mode.o \
-	comment.o convert.lo cue.o cue_utils.o debug.o discid.o editable.o expr.o \
+	comment.o convert.lo cue.o cue_utils.o debug.o editable.o expr.o \
 	filters.o format_print.o gbuf.o glob.o help.o history.o http.o id3.o input.o lastfm_loved.o \
 	job.o keys.o keyval.o lib.o load_dir.o locking.o mergesort.o misc.o options.o \
 	output.o pcm.o player.o play_queue.o pl.o pl_env.o rbtree.o read_wrapper.o \
@@ -75,7 +74,6 @@ libcmus.a: $(cmus-y) file.o path.o prog.o xmalloc.o
 # }}}
 
 # input plugins {{{
-cdio-objs		:= ip/cdio.lo
 flac-objs		:= ip/flac.lo
 mad-objs		:= ip/mad.lo ip/nomad.lo
 mikmod-objs		:= ip/mikmod.lo
@@ -92,7 +90,6 @@ ffmpeg-objs		:= ip/ffmpeg.lo
 cue-objs		:= ip/cue.lo
 vtx-objs		:= ip/vtx.lo
 
-ip-$(CONFIG_CDIO)	+= ip/cdio.so
 ip-$(CONFIG_FLAC)	+= ip/flac.so
 ip-$(CONFIG_MAD)	+= ip/mad.so
 ip-$(CONFIG_MIKMOD)	+= ip/mikmod.so
@@ -109,7 +106,6 @@ ip-$(CONFIG_FFMPEG)	+= ip/ffmpeg.so
 ip-$(CONFIG_CUE)	+= ip/cue.so
 ip-$(CONFIG_VTX)	+= ip/vtx.so
 
-$(cdio-objs):		CFLAGS += $(CDIO_CFLAGS) $(CDDB_CFLAGS)
 $(flac-objs):		CFLAGS += $(FLAC_CFLAGS)
 $(mad-objs):		CFLAGS += $(MAD_CFLAGS)
 $(mikmod-objs):		CFLAGS += $(MIKMOD_CFLAGS)
@@ -123,9 +119,6 @@ $(mp4-objs):		CFLAGS += $(MP4_CFLAGS)
 $(aac-objs):		CFLAGS += $(AAC_CFLAGS)
 $(ffmpeg-objs):		CFLAGS += $(FFMPEG_CFLAGS)
 $(vtx-objs):		CFLAGS += $(VTX_CFLAGS)
-
-ip/cdio.so: $(cdio-objs) $(libcmus-y)
-	$(call cmd,ld_dl,$(CDIO_LIBS) $(CDDB_LIBS))
 
 ip/flac.so: $(flac-objs) $(libcmus-y)
 	$(call cmd,ld_dl,$(FLAC_LIBS))

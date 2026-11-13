@@ -40,7 +40,6 @@
 #include "track_info.h"
 #include "cache.h"
 #include "debug.h"
-#include "discid.h"
 #include "mpris.h"
 #ifdef HAVE_CONFIG
 #include "config/curses.h"
@@ -58,7 +57,6 @@
 
 /* initialized option variables */
 
-char *cdda_device = NULL;
 char *output_plugin = NULL;
 char *status_display_program = NULL;
 static char *lastfm_loved_file = NULL;
@@ -306,17 +304,6 @@ static int seen_pr1317_fmts = 0;
 
 /* callbacks for normal options {{{ */
 
-static void get_device(void *data, char *buf, size_t size)
-{
-	strscpy(buf, cdda_device, size);
-}
-
-static void set_device(void *data, const char *buf)
-{
-	free(cdda_device);
-	cdda_device = expand_filename(buf);
-}
-
 #define SECOND_SIZE (44100 * 16 / 8 * 2)
 static void get_buffer_seconds(void *data, char *buf, size_t size)
 {
@@ -449,24 +436,6 @@ static void set_passwd(void *data, const char *buf)
 		free(server_password);
 		server_password = xstrdup(buf);
 	}
-}
-
-static void get_replaygain_preamp(void *data, char *buf, size_t size)
-{
-	snprintf(buf, size, "%f", replaygain_preamp);
-}
-
-static void set_replaygain_preamp(void *data, const char *buf)
-{
-	double val;
-	char *end;
-
-	val = strtod(buf, &end);
-	if (end == buf) {
-		error_msg("floating point number expected (dB)");
-		return;
-	}
-	player_set_rg_preamp(val);
 }
 
 static void get_softvol_state(void *data, char *buf, size_t size)
@@ -885,50 +854,6 @@ static void toggle_repeat(void *data)
 	if (!player_repeat_current)
 		mpris_loop_status_changed();
 	update_statusline();
-}
-
-static const char * const replaygain_names[] = {
-	"disabled", "track", "album", "track-preferred", "album-preferred", "smart", NULL
-};
-
-static const size_t replaygain_names_len = sizeof(replaygain_names) / sizeof(replaygain_names[0]) - 1;
-
-static void get_replaygain(void *data, char *buf, size_t size)
-{
-	strscpy(buf, replaygain_names[replaygain], size);
-}
-
-static void set_replaygain(void *data, const char *buf)
-{
-	int tmp;
-
-	if (!parse_enum(buf, 0, replaygain_names_len - 1, replaygain_names, &tmp))
-		return;
-	player_set_rg(tmp);
-}
-
-static void toggle_replaygain(void *data)
-{
-	player_set_rg((replaygain + 1) % replaygain_names_len);
-}
-
-static void get_replaygain_limit(void *data, char *buf, size_t size)
-{
-	strscpy(buf, bool_names[replaygain_limit], size);
-}
-
-static void set_replaygain_limit(void *data, const char *buf)
-{
-	int tmp;
-
-	if (!parse_bool(buf, &tmp))
-		return;
-	player_set_rg_limit(tmp);
-}
-
-static void toggle_replaygain_limit(void *data)
-{
-	player_set_rg_limit(replaygain_limit ^ 1);
 }
 
 static void get_resume(void *data, char *buf, size_t size)
@@ -1677,7 +1602,6 @@ static const struct {
 } simple_options[] = {
 	DT(aaa_mode)
 	DT(auto_reshuffle)
-	DN_FLAGS(device, OPT_PROGRAM_PATH)
 	DN(buffer_seconds)
 	DN(scroll_offset)
 	DN(rewind_offset)
@@ -1698,9 +1622,6 @@ static const struct {
 	DT(display_artist_sort_name)
 	DT(repeat)
 	DT(repeat_current)
-	DT(replaygain)
-	DT(replaygain_limit)
-	DN(replaygain_preamp)
 	DT(resume)
 	DT(show_hidden)
 	DT(auto_expand_albums_follow)
@@ -1812,11 +1733,23 @@ void option_add(const char *name, const void *data, opt_get_cb get,
 	nr_options++;
 }
 
+/* removed from this fork, but still in old autosave files */
+static const char * const removed_options[] = {
+	"device", "replaygain", "replaygain_limit", "replaygain_preamp", NULL
+};
+
 struct cmus_opt *option_find(const char *name)
 {
 	struct cmus_opt *opt = option_find_silent(name);
-	if (opt == NULL)
-		error_msg("no such option %s", name);
+	int i;
+
+	if (opt)
+		return opt;
+	for (i = 0; removed_options[i]; i++) {
+		if (strcmp(name, removed_options[i]) == 0)
+			return NULL;
+	}
+	error_msg("no such option %s", name);
 	return opt;
 }
 
@@ -1897,7 +1830,6 @@ void options_load(void)
 	int i;
 
 	/* initialize those that can't be statically initialized */
-	cdda_device = get_default_cdda_device();
 	for (i = 0; str_defaults[i].name; i++)
 		option_set(str_defaults[i].name, str_defaults[i].value);
 

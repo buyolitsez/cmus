@@ -89,9 +89,6 @@ int player_cont_album = 1;
 /* repeat current track forever? */
 int player_repeat_current;
 
-enum replaygain replaygain;
-int replaygain_limit = 1;
-double replaygain_preamp = 0.0;
 
 int soft_vol;
 int soft_vol_l;
@@ -118,7 +115,6 @@ static unsigned long consumer_pos = 0;
  * usually same as consumer_pos, sometimes more than consumer_pos
  */
 static unsigned long scale_pos;
-static double replaygain_scale = 1.0;
 
 /* locking {{{ */
 
@@ -319,7 +315,7 @@ static void scale_samples(char *buffer, unsigned int *countp)
 	}
 	scale_pos += count;
 
-	if (replaygain_scale == 1.0 && soft_vol_l == 100 && soft_vol_r == 100)
+	if (soft_vol_l == 100 && soft_vol_r == 100)
 		return;
 
 	ch = sf_get_channels(buffer_sf);
@@ -334,9 +330,6 @@ static void scale_samples(char *buffer, unsigned int *countp)
 	if (soft_vol && soft_vol_r != 100)
 		r = soft_vol_db[soft_vol_r];
 
-	l *= replaygain_scale;
-	r *= replaygain_scale;
-
 	switch (bits) {
 	case 16:
 		SCALE_SAMPLES(int16_t, buffer, count, l, r, sf_need_swap(buffer_sf));
@@ -349,61 +342,6 @@ static void scale_samples(char *buffer, unsigned int *countp)
 		SCALE_SAMPLES(int32_t, buffer, count, l, r, sf_need_swap(buffer_sf));
 		break;
 	}
-}
-
-static void update_rg_scale(void)
-{
-	double gain, peak, db, scale, limit;
-
-	replaygain_scale = 1.0;
-	if (!player_info_priv.ti || !replaygain)
-		return;
-
-	bool avoid_album_gain = replaygain == RG_SMART && (!play_library || shuffle == SHUFFLE_TRACKS || cmus_queue_active());
-	
-	if (replaygain == RG_TRACK || replaygain == RG_TRACK_PREFERRED || avoid_album_gain) {
-		gain = player_info_priv.ti->rg_track_gain;
-		peak = player_info_priv.ti->rg_track_peak;
-	} else {
-		gain = player_info_priv.ti->rg_album_gain;
-		peak = player_info_priv.ti->rg_album_peak;
-	}
-
-	if (isnan(gain)) {
-		if (replaygain == RG_TRACK_PREFERRED || avoid_album_gain) {
-			gain = player_info_priv.ti->rg_album_gain;
-			peak = player_info_priv.ti->rg_album_peak;
-		} else if (replaygain == RG_ALBUM_PREFERRED) {
-			gain = player_info_priv.ti->rg_track_gain;
-			peak = player_info_priv.ti->rg_track_peak;
-		}
-	}
-
-	if (isnan(gain)) {
-		d_print("gain not available\n");
-		return;
-	}
-	if (isnan(peak)) {
-		d_print("peak not available, deriving from output gain\n");
-		peak = pow(10.0, player_info_priv.ti->output_gain / 20.0);
-	}
-	if (peak < 0.05) {
-		d_print("peak (%g) is too small\n", peak);
-		return;
-	}
-
-	db = replaygain_preamp + gain;
-
-	scale = pow(10.0, db / 20.0);
-	replaygain_scale = scale;
-	limit = 1.0 / peak;
-	if (replaygain_limit && !isnan(peak)) {
-		if (replaygain_scale > limit)
-			replaygain_scale = limit;
-	}
-
-	d_print("gain = %f, peak = %f, db = %f, scale = %f, limit = %f, replaygain_scale = %f\n",
-			gain, peak, db, scale, limit, replaygain_scale);
 }
 
 static inline unsigned int buffer_second_size(void)
@@ -420,7 +358,6 @@ static inline void _file_changed(struct track_info *ti, int reset_seek)
 		track_info_unref(player_info_priv.ti);
 
 	player_info_priv.ti = ti;
-	update_rg_scale();
 	player_metadata[0] = 0;
 	player_info_priv.file_changed = 1;
 	if (reset_seek)
@@ -941,7 +878,7 @@ static void *consumer_loop(void *arg)
 			}
 			if (size > space)
 				size = space;
-			if (soft_vol || replaygain)
+			if (soft_vol)
 				scale_samples(rpos, (unsigned int *)&size);
 			rc = op_write(rpos, size);
 			if (rc < 0) {
@@ -1409,8 +1346,8 @@ void player_set_soft_volume(int l, int r)
 void player_set_soft_vol(int soft)
 {
 	consumer_lock();
-	/* don't mess with scale_pos if soft_vol or replaygain is already enabled */
-	if (!soft_vol && !replaygain)
+	/* don't mess with scale_pos if soft_vol is already enabled */
+	if (!soft_vol)
 		scale_pos = consumer_pos;
 	soft_vol = soft;
 	consumer_unlock();
@@ -1443,45 +1380,6 @@ int player_set_vol(int l, int lf, int r, int rf)
 		mixer_read_volume();
 	}
 	return rc;
-}
-
-void player_set_rg(enum replaygain rg)
-{
-	player_lock();
-	/* don't mess with scale_pos if soft_vol or replaygain is already enabled */
-	if (!soft_vol && !replaygain)
-		scale_pos = consumer_pos;
-	replaygain = rg;
-
-	player_info_priv_lock();
-	update_rg_scale();
-	player_info_priv_unlock();
-
-	player_unlock();
-}
-
-void player_set_rg_limit(int limit)
-{
-	player_lock();
-	replaygain_limit = limit;
-
-	player_info_priv_lock();
-	update_rg_scale();
-	player_info_priv_unlock();
-
-	player_unlock();
-}
-
-void player_set_rg_preamp(double db)
-{
-	player_lock();
-	replaygain_preamp = db;
-
-	player_info_priv_lock();
-	update_rg_scale();
-	player_info_priv_unlock();
-
-	player_unlock();
 }
 
 void player_info_snapshot(void)

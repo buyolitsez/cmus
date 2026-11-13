@@ -229,13 +229,6 @@ check_ncurses()
 	return 0
 }
 
-check_discid()
-{
-	HAVE_DISCID=n
-	pkg_config DISCID "libdiscid" "" "-ldiscid" && HAVE_DISCID=y
-	return $?
-}
-
 check_mpc()
 {
 	MPC_SV8=0
@@ -246,18 +239,6 @@ check_mpc()
 		check_header mpcdec/mpcdec.h || return $?
 	fi
 	check_library MPC "" "-lmpcdec -lm"
-	return $?
-}
-
-check_cddb()
-{
-	pkg_config CDDB "libcddb" "" "-lcddb" && HAVE_CDDB=y
-	return $?
-}
-
-check_cdio()
-{
-	pkg_config CDIO "libcdio_cdda" "" "-lcdio_cdio -lcdio -lm"
 	return $?
 }
 
@@ -550,7 +531,6 @@ int main() { return 0; }
 # defaults
 prefix=/usr/local
 DEBUG=1
-HAVE_CDDB=n
 CONFIG_TREMOR=n
 CONFIG_MIKMOD=n
 CONFIG_BASS=n
@@ -578,11 +558,8 @@ Optional Features: y/n
   CONFIG_ALSA           ALSA                                            [auto]
   CONFIG_AO             Libao cross-platform audio library              [auto]
   CONFIG_ARTS           ARTS                                            [auto]
-  CONFIG_CDDB           libcddb CDDA identification                     [auto]
-  CONFIG_CDIO           libcdio CDDA input                              [auto]
   CONFIG_COREAUDIO      CoreAudio                                       [auto]
   CONFIG_CUE            CUE sheets (.cue)                               [y]
-  CONFIG_DISCID         libdiscid CDDA identification                   [auto]
   CONFIG_FFMPEG         FFMPEG (.shn, .wma)                             [auto]
   CONFIG_FLAC           Free Lossless Audio Codec (.flac, .fla)         [auto]
   CONFIG_JACK           JACK                                            [auto]
@@ -647,8 +624,6 @@ check_header byteswap.h && HAVE_BYTESWAP_H=y
 check_string_function "strdup" && HAVE_STRDUP=y
 check_string_function "strndup" && HAVE_STRNDUP=y
 
-check check_cddb       CONFIG_CDDB
-check check_cdio       CONFIG_CDIO
 check check_flac       CONFIG_FLAC
 check check_mad        CONFIG_MAD
 check check_mikmod     CONFIG_MIKMOD
@@ -681,21 +656,12 @@ check check_waveout    CONFIG_WAVEOUT
 check check_roar       CONFIG_ROAR
 check check_aaudio     CONFIG_AAUDIO
 
-# discid is only needed if at least one cdda plugin is active
-test -z "$CONFIG_DISCID" && CONFIG_DISCID=a
-if test "$CONFIG_DISCID" = a
-then
-	test "$CONFIG_CDIO" = n && CONFIG_DISCID=n
-fi
-check check_discid  CONFIG_DISCID
 
 test "$WORDS_BIGENDIAN" = y && CFLAGS="${CFLAGS} -DWORDS_BIGENDIAN"
-test "$HAVE_DISCID" = y && CFLAGS="${CFLAGS} -DHAVE_DISCID"
 
 DATADIR="$datadir"
 LIBDIR="$libdir"
 
-config_header config/cdio.h HAVE_CDDB
 config_header config/mpris.h CONFIG_MPRIS
 config_header config/datadir.h DATADIR
 config_header config/libdir.h LIBDIR
@@ -716,7 +682,7 @@ CFLAGS="${CFLAGS} -DHAVE_CONFIG"
 
 makefile_vars bindir datadir libdir mandir docdir exampledir
 makefile_vars \
-	CONFIG_AAC CONFIG_ALSA CONFIG_AO CONFIG_ARTS CONFIG_CDIO \
+	CONFIG_AAC CONFIG_ALSA CONFIG_AO CONFIG_ARTS \
 	CONFIG_COREAUDIO CONFIG_CUE CONFIG_FFMPEG CONFIG_FLAC CONFIG_JACK \
 	CONFIG_MAD CONFIG_MIKMOD CONFIG_MODPLUG CONFIG_MP4 CONFIG_MPC \
 	CONFIG_MPRIS CONFIG_OPUS CONFIG_OSS CONFIG_PULSE CONFIG_ROAR \

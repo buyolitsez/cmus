@@ -32,7 +32,6 @@
 #include "file.h"
 #include "cache.h"
 #include "player.h"
-#include "discid.h"
 #include "xstrjoin.h"
 #include "ui_curses.h"
 #include "cue_utils.h"
@@ -209,25 +208,6 @@ static int add_file_cue(const char *filename)
 static void add_url(const char *url)
 {
 	add_file(url, 0);
-}
-
-static void add_cdda(const char *url)
-{
-	char *disc_id = NULL;
-	int start_track = 1, end_track = -1;
-
-	parse_cdda_url(url, &disc_id, &start_track, &end_track);
-
-	if (end_track != -1) {
-		int i;
-		for (i = start_track; i <= end_track; i++) {
-			char *new_url = gen_cdda_url(disc_id, i, -1);
-			add_file(new_url, 0);
-			free(new_url);
-		}
-	} else
-		add_file(url, 0);
-	free(disc_id);
 }
 
 struct dir_list_entry {
@@ -486,9 +466,6 @@ static void do_add_job(void *data)
 	switch (jd->type) {
 	case FILE_TYPE_URL:
 		add_url(jd->name);
-		break;
-	case FILE_TYPE_CDDA:
-		add_cdda(jd->name);
 		break;
 	case FILE_TYPE_PL:
 		add_pl(jd->name);

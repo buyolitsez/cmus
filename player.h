@@ -41,15 +41,6 @@ enum player_status {
 	NR_PLAYER_STATUS
 };
 
-enum replaygain {
-	RG_DISABLED,
-	RG_TRACK,
-	RG_ALBUM,
-	RG_TRACK_PREFERRED,
-	RG_ALBUM_PREFERRED,
-	RG_SMART
-};
-
 struct player_info {
 	/* current track */
 	struct track_info *ti;
@@ -80,9 +71,6 @@ extern struct player_info player_info;
 extern int player_cont;
 extern int player_cont_album;
 extern int player_repeat_current;
-extern enum replaygain replaygain;
-extern int replaygain_limit;
-extern double replaygain_preamp;
 extern int soft_vol;
 extern int soft_vol_l;
 extern int soft_vol_r;
@@ -111,9 +99,6 @@ void player_info_snapshot(void);
 
 void player_set_soft_volume(int l, int r);
 void player_set_soft_vol(int soft);
-void player_set_rg(enum replaygain rg);
-void player_set_rg_limit(int limit);
-void player_set_rg_preamp(double db);
 
 #define VF_RELATIVE	0x01
 #define VF_PERCENTAGE	0x02
