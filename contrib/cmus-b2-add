@@ -33,6 +33,9 @@ import libtorrent as lt
 AUDIO_EXT = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".ape", ".wv", ".aac"}
 DISC_DIR = re.compile(r"^(cd|disc|disk|диск)\s*\d+\b", re.I)
 MODEL = "claude-sonnet-5-5"
+# folder names that say nothing about the artist, not used to find the artist's folder
+_WORD = r"(albums?|discography|studio|live|singles?|compilations?|collection|bootlegs?|other|eps?|mp3|flac|cd|disc)"
+GENERIC = re.compile(rf"^[\W\d]*{_WORD}([\W\d]+{_WORD})*[\W\d]*$", re.I)
 
 p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 p.add_argument("torrent", nargs="?")
@@ -68,21 +71,30 @@ def album_of(path):
     return os.path.dirname(d) if DISC_DIR.match(os.path.basename(d)) else d
 
 
-def library_dirs():
-    """Folders of the library: from the bucket's catalog, as ~/Music may keep only part of it."""
+def library_listing(names):
+    """The part of the library Claude needs: genres and artists (two levels), a few album folders of
+    each genre for the naming style, and everything under the folders whose names occur in names.
+    From the bucket's catalog, as the music folder may keep only part of the library."""
     os.makedirs(cache, exist_ok=True)
     catalog = os.path.join(cache, "catalog.json.gz")
     subprocess.run(["rclone", "copyto", f"{a.remote}/catalog.json.gz", catalog], check=True)
     with gzip.open(catalog, "rt", encoding="utf-8") as f:
-        albums = json.load(f)["albums"]
+        albums = sorted({album_of(t["path"]) for al in json.load(f)["albums"] for t in al["tracks"]})
     dirs = set()
-    for al in albums:
-        for t in al["tracks"]:
-            d = album_of(t["path"])
-            while d and d not in dirs:
-                dirs.add(d)
-                d = os.path.dirname(d)
-    return sorted(dirs)
+    for d in albums:
+        while d and d not in dirs:
+            dirs.add(d)
+            d = os.path.dirname(d)
+    hay = names.casefold()
+    shown = {d for d in dirs if d.count("/") < 2 or any(
+        len(c) >= 4 and not GENERIC.search(c) and c.casefold() in hay for c in d.split("/")[1:3])}
+    samples, seen = {}, set()
+    for d in albums:  # one album of each artist, a few per genre
+        genre, artist = d.split("/")[0], "/".join(d.split("/")[:2])
+        if artist not in seen and len(samples.setdefault(genre, [])) < 4:
+            seen.add(artist)
+            samples[genre].append(d)
+    return "\n".join(sorted(shown | {d for v in samples.values() for d in v}))
 
 
 def load_env():
@@ -99,9 +111,11 @@ def propose(torrent_name, albums):
     listing = "\n".join(
         f"- {src or '(torrent root)'}\n" + "".join(f"    {n}\n" for n in names[:40])
         for src, names in albums.items())
-    prompt = f"""Folders of my music library (one per line, relative to the library root):
+    library = library_listing("\n".join([torrent_name, *albums]))
+    prompt = f"""Folders of my music library, relative to the library root: all genres and artists, a few
+albums of each genre, and the folders whose names occur in the torrent:
 <library>
-{chr(10).join(library_dirs())}
+{library}
 </library>
 
 I am adding albums from the torrent "{torrent_name}". Their folders in the torrent, with the files in each:
