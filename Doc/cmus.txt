@@ -76,6 +76,10 @@ Settings view (7)
 	*D* or *del*, change bindings and variables with *enter*, and toggle
 	variables with *space*.
 
+Lyrics view (8)
+	Lyrics of the playing track, printed by *lyrics_program*. For LRC lyrics
+	(lines starting with [mm:ss.xx]) the line being sung is highlighted.
+
 @h1 COMMAND LINE
 
 Everything in cmus is implemented as commands which can be typed at the command line
@@ -256,6 +260,7 @@ I                       echo {}
 5                       view browser
 6                       view filters
 7                       view settings
+8                       view lyrics
 
 mouse_scroll_up_title   left-view
 mouse_scroll_down_title right-view
@@ -1092,6 +1097,10 @@ lastfm_loved_file () [file]
 	a case-insensitive artist/title match. Setting this option reloads the cache;
 	if the new file is invalid or unreadable, cmus keeps the previously loaded
 	cache.
+
+lyrics_program () [command]
+	Program that gets the track's filename and prints its lyrics, plain text
+	or LRC, for the lyrics view. See contrib/cmus-b2-lyrics.
 
 format_statusline [`Format String`]
 	Format string for status line.

@@ -36,6 +36,7 @@
 #include "output.h"
 #include "input.h"
 #include "lastfm_loved.h"
+#include "lyrics.h"
 #include "xstrjoin.h"
 #include "track_info.h"
 #include "cache.h"
@@ -689,7 +690,8 @@ static void toggle_confirm_run(void *data)
 }
 
 const char * const view_names[NR_VIEWS + 1] = {
-	"tree", "sorted", "playlist", "queue", "browser", "filters", "settings", NULL
+	"tree", "sorted", "playlist", "queue", "browser", "filters", "settings",
+	"lyrics", NULL
 };
 
 static void get_play_library(void *data, char *buf, size_t size)
@@ -1549,6 +1551,20 @@ static void set_clipped_text_format(void *data, const char *buf)
 	update_full();
 }
 
+static void get_lyrics_program(void *data, char *buf, size_t size)
+{
+	if (lyrics_program)
+		strscpy(buf, lyrics_program, size);
+}
+
+static void set_lyrics_program(void *data, const char *buf)
+{
+	free(lyrics_program);
+	lyrics_program = buf[0] ? expand_filename(buf) : NULL;
+	lyrics_reload();
+	update_full();
+}
+
 static void get_lastfm_loved_file(void *data, char *buf, size_t size)
 {
 	strscpy(buf, lastfm_loved_file, size);
@@ -1599,6 +1615,7 @@ static const struct {
 	DT(sort_albums_by_name)
 	DN(id3_default_charset)
 	{ "lastfm_loved_file", get_lastfm_loved_file, set_lastfm_loved_file, NULL, 0 },
+	DN_FLAGS(lyrics_program, OPT_PROGRAM_PATH)
 	DN(lib_sort)
 	DN(output_plugin)
 	DN(passwd)

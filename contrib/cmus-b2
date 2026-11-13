@@ -8,6 +8,7 @@ tags, so cmus adds the tracks without reading the files over the network.
 Writes to ~/.cache/cmus-b2:
   library.m3u  tagged playlist for ":add" (filename, duration, mtime, tags)
   likes        liked tracks for the lastfm_loved_file option
+  lyrics/      lyrics from the bucket for contrib/cmus-b2-lyrics
 If cmus is running, adds the library and reloads the likes.
 """
 import argparse
@@ -76,6 +77,21 @@ for al in catalog["albums"]:
         tid = path if "start" not in t else f"{path}#{float(t['start'])}"
         if (t.get("liked") or tid in added) and tid not in removed and clean(artist) and clean(t["title"]):
             loved[(artist.casefold(), t["title"].casefold())] = (artist, t["title"])
+
+# lyrics from tags, as contrib/cmus-b2-lyrics reads them
+lyrics_json = os.path.join(out, "lyrics-json")
+subprocess.run(["rclone", "sync", f"{a.remote}/lyrics", lyrics_json], check=True)
+for al in catalog["albums"]:
+    try:
+        with open(os.path.join(lyrics_json, al["id"] + ".json"), encoding="utf-8") as f:
+            texts = json.load(f)
+    except FileNotFoundError:
+        continue
+    for path, text in texts.items():
+        lrc = os.path.join(out, "lyrics", path + ".lrc")
+        os.makedirs(os.path.dirname(lrc), exist_ok=True)
+        with open(lrc, "w", encoding="utf-8") as f:
+            f.write(text)
 
 library = os.path.join(out, "library.m3u")
 with open(library + ".tmp", "w", encoding="utf-8") as f:

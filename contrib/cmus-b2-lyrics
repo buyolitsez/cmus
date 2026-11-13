@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""Print the lyrics of a track for cmus (set lyrics_program=.../cmus-b2-lyrics).
+
+Tracks from the bucket mount: the lyrics that contrib/cmus-b2 saved from the
+bucket's lyrics/. Local files: a .lrc file next to the track, else the lyrics tag.
+"""
+import os
+import sys
+
+MOUNT = os.path.expanduser(os.environ.get("CMUS_B2_MOUNT", "~/b2music"))
+CACHE = os.path.expanduser(os.environ.get("CMUS_B2_CACHE", "~/.cache/cmus-b2"))
+
+path = sys.argv[1]
+if path.startswith("cue://"):
+    sys.exit()
+if path.startswith(MOUNT + "/"):
+    candidates = [os.path.join(CACHE, "lyrics", os.path.relpath(path, MOUNT) + ".lrc")]
+else:
+    candidates = [os.path.splitext(path)[0] + ".lrc"]
+for c in candidates:
+    if os.path.isfile(c):
+        sys.stdout.write(open(c, encoding="utf-8", errors="replace").read())
+        sys.exit()
+if path.startswith(MOUNT + "/"):
+    sys.exit()
+
+try:
+    import mutagen
+    f = mutagen.File(path)
+except Exception:
+    sys.exit()
+if f is None or not f.tags:
+    sys.exit()
+tags = f.tags
+for key in ("lyrics", "unsyncedlyrics", "LYRICS", "UNSYNCEDLYRICS", "\xa9lyr"):
+    if key in tags:
+        v = tags[key]
+        sys.stdout.write(v[0] if isinstance(v, list) else str(v))
+        sys.exit()
+for k in getattr(tags, "keys", lambda: [])():
+    if k.startswith("USLT"):
+        sys.stdout.write(str(tags[k]))
+        sys.exit()
