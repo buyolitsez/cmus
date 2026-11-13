@@ -1,0 +1,63 @@
+# Light theme matching the light theme of b2-player: white background,
+# light gray panels, dark green accent (#139452 ~ 29).
+# Load with :colorscheme b2
+
+set color_win_fg=234
+set color_win_bg=231
+set color_win_attr=default
+set color_win_dir=29
+set color_separator=252
+
+# top titles ("Library", "Artist - Album") and album rows in the track window
+set color_win_title_bg=255
+set color_win_title_fg=234
+set color_win_title_attr=bold
+set color_trackwin_album_bg=231
+set color_trackwin_album_fg=234
+set color_trackwin_album_attr=bold
+
+# cursor
+set color_win_sel_bg=254
+set color_win_sel_fg=234
+set color_win_sel_attr=default
+set color_win_inactive_sel_bg=255
+set color_win_inactive_sel_fg=234
+set color_win_inactive_sel_attr=default
+
+# playing track
+set color_win_cur=29
+set color_win_cur_attr=bold
+set color_win_cur_sel_bg=194
+set color_win_cur_sel_fg=29
+set color_win_cur_sel_attr=bold
+set color_win_inactive_cur_sel_bg=255
+set color_win_inactive_cur_sel_fg=29
+set color_win_inactive_cur_sel_attr=bold
+
+# now playing line and status line with a green progress bar
+set color_titleline_bg=231
+set color_titleline_fg=29
+set color_titleline_attr=bold
+set color_statusline_bg=255
+set color_statusline_fg=242
+set color_statusline_attr=default
+set color_statusline_progress_bg=194
+set color_statusline_progress_fg=29
+set color_statusline_progress_attr=default
+set progress_bar=color
+
+set color_cmdline_bg=231
+set color_cmdline_fg=234
+set color_cmdline_attr=default
+set color_error=160
+set color_info=29
+
+# rows like in the app: number, title, heart for likes, duration
+set format_trackwin= %02n. %t%{?lastfm_loved? ♥}%= %d 
+set format_trackwin_va= %02n. %t · %a%{?lastfm_loved? ♥}%= %d 
+set format_trackwin_album= %l%= %y · %{duration} 
+set format_treewin=   %l%= %y 
+set format_playlist= %-24%a %t%{?lastfm_loved? ♥}%= %l · %d 
+set format_playlist_va= %-24%A %t · %a%{?lastfm_loved? ♥}%= %l · %d 
+set format_current= %t%{?lastfm_loved? ♥} · %a%= %l %{?y?· %y} 
+set format_title=%t · %a
