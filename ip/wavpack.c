@@ -20,7 +20,6 @@
 #include "../ape.h"
 #include "../id3.h"
 #include "../xmalloc.h"
-#include "../read_wrapper.h"
 #include "../debug.h"
 #include "../buffer.h"
 #include "../comment.h"
@@ -174,7 +173,7 @@ static int wavpack_open(struct input_plugin_data *ip_data)
 
 	priv = xnew(struct wavpack_private, 1);
 	*priv = priv_init;
-	if (!ip_data->remote && fstat(ip_data->fd, &st) == 0) {
+	if (fstat(ip_data->fd, &st) == 0) {
 		char *filename_wvc;
 
 		priv->wv_file.len = st.st_size;

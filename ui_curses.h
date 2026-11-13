@@ -73,7 +73,6 @@ void enter_search_backward_mode(void);
 int track_format_valid(const char *format);
 
 /* lock player_info ! */
-const char *get_stream_title(void);
 const struct format_option *get_global_fopts(void);
 
 int get_track_win_x(void);

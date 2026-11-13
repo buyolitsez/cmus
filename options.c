@@ -172,7 +172,6 @@ char *statusline_format = NULL;
 char *window_title_format = NULL;
 char *window_title_alt_format = NULL;
 char *id3_default_charset = NULL;
-char *icecast_default_charset = NULL;
 char *lib_add_filter = NULL;
 char **pl_env_vars;
 
@@ -295,7 +294,6 @@ static const struct {
 	{ "lib_sort", "albumartist date album discnumber tracknumber title filename play_count" },
 	{ "pl_sort", "" },
 	{ "id3_default_charset", "ISO-8859-1" },
-	{ "icecast_default_charset", "ISO-8859-1" },
 	{ "pl_env_vars", "" },
 	{ NULL, NULL }
 };
@@ -351,21 +349,10 @@ static void get_id3_default_charset(void *data, char *buf, size_t size)
 	strscpy(buf, id3_default_charset, size);
 }
 
-static void get_icecast_default_charset(void *data, char *buf, size_t size)
-{
-	strscpy(buf, icecast_default_charset, size);
-}
-
 static void set_id3_default_charset(void *data, const char *buf)
 {
 	free(id3_default_charset);
 	id3_default_charset = xstrdup(buf);
-}
-
-static void set_icecast_default_charset(void *data, const char *buf)
-{
-	free(icecast_default_charset);
-	icecast_default_charset = xstrdup(buf);
 }
 
 static void get_lib_sort(void *data, char *buf, size_t size)
@@ -1611,7 +1598,6 @@ static const struct {
 	DT(smart_artist_sort)
 	DT(sort_albums_by_name)
 	DN(id3_default_charset)
-	DN(icecast_default_charset)
 	{ "lastfm_loved_file", get_lastfm_loved_file, set_lastfm_loved_file, NULL, 0 },
 	DN(lib_sort)
 	DN(output_plugin)
@@ -1735,7 +1721,8 @@ void option_add(const char *name, const void *data, opt_get_cb get,
 
 /* removed from this fork, but still in old autosave files */
 static const char * const removed_options[] = {
-	"device", "replaygain", "replaygain_limit", "replaygain_preamp", NULL
+	"device", "icecast_default_charset", "replaygain", "replaygain_limit",
+	"replaygain_preamp", NULL
 };
 
 struct cmus_opt *option_find(const char *name)

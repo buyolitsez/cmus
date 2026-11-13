@@ -21,7 +21,6 @@
 #include "../debug.h"
 #include "../id3.h"
 #include "../comment.h"
-#include "../read_wrapper.h"
 #include "aac.h"
 
 #include <neaacdec.h>
@@ -85,7 +84,7 @@ static int buffer_fill(struct input_plugin_data *ip_data)
 	if (priv->rbuf_len == BUFFER_SIZE)
 		return 1;
 
-	n = read_wrapper(ip_data, priv->rbuf + priv->rbuf_len, BUFFER_SIZE - priv->rbuf_len);
+	n = read(ip_data->fd, priv->rbuf + priv->rbuf_len, BUFFER_SIZE - priv->rbuf_len);
 	if (n == -1)
 		return -1;
 	if (n == 0)

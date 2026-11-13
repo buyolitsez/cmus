@@ -18,7 +18,6 @@
 
 #include "../ip.h"
 #include "../xmalloc.h"
-#include "../read_wrapper.h"
 #include "../debug.h"
 #include "../comment.h"
 
@@ -34,13 +33,12 @@
 
 struct opus_private {
 	OggOpusFile *of;
-	int current_link;
 };
 
 static int read_func(void *datasource, unsigned char *ptr, int size)
 {
 	struct input_plugin_data *ip_data = datasource;
-	return read_wrapper(ip_data, ptr, size);
+	return read(ip_data->fd, ptr, size);
 }
 
 static int seek_func(void *datasource, opus_int64 offset, int whence)
@@ -79,7 +77,6 @@ static int opus_open(struct input_plugin_data *ip_data)
 	int rc;
 
 	priv = xnew(struct opus_private, 1);
-	priv->current_link = -1;
 	priv->of = NULL;
 
 	priv->of = op_open_callbacks(ip_data, &callbacks, NULL, 0, &rc);
@@ -183,11 +180,6 @@ static int opus_read(struct input_plugin_data *ip_data, char *buffer, int count)
 			d_print("error: %d\n", current_link);
 			rc = -1;
 		} else {
-			if (ip_data->remote && current_link != priv->current_link) {
-				ip_data->metadata_changed = 1;
-				priv->current_link = current_link;
-			}
-
 			/* bytes = samples * channels * sample_size */
 			rc = samples * CHANNELS * sizeof(opus_int16);
 		}

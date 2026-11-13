@@ -126,9 +126,6 @@ static T(LengthStatus) length_cb(const Dec *dec, uint64_t *len, void *data)
 	struct input_plugin_data *ip_data = data;
 	struct flac_private *priv = ip_data->private;
 
-	if (ip_data->remote) {
-		return E(LENGTH_STATUS_ERROR);
-	}
 	*len = priv->len;
 	return E(LENGTH_STATUS_OK);
 }
@@ -217,7 +214,7 @@ static void metadata_cb(const Dec *dec, const FLAC__StreamMetadata *metadata, vo
 				sf_bits(bits) |
 				sf_signed(1) |
 				sf_channels(si->channels);
-			if (!ip_data->remote && si->total_samples) {
+			if (si->total_samples) {
 				priv->duration = (double) si->total_samples / si->sample_rate;
 				if (priv->duration >= 1 && priv->len >= 1)
 					priv->bitrate = priv->len * 8 / priv->duration;
@@ -344,21 +341,17 @@ static int flac_open(struct input_plugin_data *ip_data)
 
 	priv = xnew(struct flac_private, 1);
 	*priv = priv_init;
-	if (ip_data->remote) {
-		priv->len = UINT64_MAX;
-	} else {
-		off_t off = lseek(ip_data->fd, 0, SEEK_END);
+	off_t off = lseek(ip_data->fd, 0, SEEK_END);
 
-		if (off == -1 || lseek(ip_data->fd, 0, SEEK_SET) == -1) {
-			int save = errno;
+	if (off == -1 || lseek(ip_data->fd, 0, SEEK_SET) == -1) {
+		int save = errno;
 
-			F(delete)(dec);
-			free(priv);
-			errno = save;
-			return -IP_ERROR_ERRNO;
-		}
-		priv->len = off;
+		F(delete)(dec);
+		free(priv);
+		errno = save;
+		return -IP_ERROR_ERRNO;
 	}
+	priv->len = off;
 	ip_data->private = priv;
 
 	FLAC__stream_decoder_set_metadata_respond_all(dec);

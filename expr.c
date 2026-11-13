@@ -911,9 +911,6 @@ static int int_val(const char *key, struct track_info *ti)
 	int val;
 	if (strcmp(key, "duration") == 0) {
 		val = ti->duration;
-		/* duration of a stream is infinite (well, almost) */
-		if (is_http_url(ti->filename))
-			val = INT_MAX;
 	} else if (strcmp(key, "date") == 0) {
 		val = (ti->date >= 0) ? (ti->date / 10000) : -1;
 	} else if (strcmp(key, "originaldate") == 0) {
@@ -1028,8 +1025,9 @@ int expr_eval(struct expr *expr, struct track_info *ti)
 		}
 		return res;
 	}
+	/* internet radio was removed; kept for filters like !stream */
 	if (strcmp(key, "stream") == 0)
-		return is_http_url(ti->filename);
+		return 0;
 	return track_info_has_tag(ti);
 }
 

@@ -59,10 +59,9 @@ enum consumer_status {
 	CS_PAUSED
 };
 
-/* protects player_info_priv and player_metadata */
+/* protects player_info_priv */
 static pthread_mutex_t player_info_mutex = CMUS_MUTEX_INITIALIZER;
 struct player_info player_info;
-char player_metadata[255 * 16 + 1];
 static struct player_info player_info_priv = {
 	.ti = NULL,
 	.status = PLAYER_STATUS_STOPPED,
@@ -73,7 +72,6 @@ static struct player_info player_info_priv = {
 	.buffer_size = 0,
 	.error_msg = NULL,
 	.file_changed = 0,
-	.metadata_changed = 0,
 	.status_changed = 0,
 	.position_changed = 0,
 	.position_seeked = 0,
@@ -358,7 +356,6 @@ static inline void _file_changed(struct track_info *ti, int reset_seek)
 		track_info_unref(player_info_priv.ti);
 
 	player_info_priv.ti = ti;
-	player_metadata[0] = 0;
 	player_info_priv.file_changed = 1;
 	if (reset_seek)
 		player_info_priv.position_seeked = 0;
@@ -373,28 +370,6 @@ static inline void file_changed(struct track_info *ti)
 		d_print("unloaded\n");
 	}
 	_file_changed(ti, 1);
-}
-
-static inline void metadata_changed(void)
-{
-	struct keyval *comments;
-	int rc;
-
-	player_info_priv_lock();
-	if (ip_get_metadata(ip)) {
-		d_print("metadata changed: %s\n", ip_get_metadata(ip));
-		memcpy(player_metadata, ip_get_metadata(ip), 255 * 16 + 1);
-	}
-
-	rc = ip_read_comments(ip, &comments);
-	if (!rc) {
-		if (player_info_priv.ti->comments)
-			keyvals_free(player_info_priv.ti->comments);
-		track_info_set_comments(player_info_priv.ti, comments);
-	}
-
-	player_info_priv.metadata_changed = 1;
-	player_info_priv_unlock();
 }
 
 static void player_error(const char *msg)
@@ -525,17 +500,9 @@ static void _prebuffer(void)
 	int limit_chunks;
 
 	BUG_ON(producer_status != PS_PLAYING);
-	if (ip_is_remote(ip)) {
-		limit_chunks = buffer_nr_chunks;
-	} else {
-		int limit_ms, limit_size;
-
-		limit_ms = 250;
-		limit_size = limit_ms * buffer_second_size() / 1000;
-		limit_chunks = limit_size / CHUNK_SIZE;
-		if (limit_chunks < 1)
-			limit_chunks = 1;
-	}
+	limit_chunks = 250 * buffer_second_size() / 1000 / CHUNK_SIZE;
+	if (limit_chunks < 1)
+		limit_chunks = 1;
 	while (1) {
 		int nr_read, size, filled;
 		char *wpos;
@@ -558,9 +525,6 @@ static void _prebuffer(void)
 			/* ip_read sets eof */
 			nr_read = 0;
 		}
-		if (ip_metadata_changed(ip))
-			metadata_changed();
-
 		/* buffer_fill with 0 count marks current chunk filled */
 		buffer_fill(nr_read);
 
@@ -755,13 +719,6 @@ static void _consumer_handle_eof(void)
 {
 	struct track_info *ti;
 
-	if (ip_is_remote(ip)) {
-		_producer_stop();
-		_consumer_drain_and_stop();
-		player_error("lost connection");
-		return;
-	}
-
 	if (player_info_priv.ti)
 		player_info_priv.ti->play_count++;
 
@@ -946,9 +903,6 @@ static void *producer_loop(void *arg)
 					break;
 				}
 			}
-			if (ip_metadata_changed(ip))
-				metadata_changed();
-
 			/* buffer_fill with 0 count marks current chunk filled */
 			buffer_fill(nr_read);
 			if (nr_read == 0) {
@@ -1050,11 +1004,6 @@ void player_play(void)
 	int prebuffer;
 
 	player_lock();
-	if (producer_status == PS_PLAYING && ip_is_remote(ip)) {
-		/* seeking not allowed */
-		player_unlock();
-		return;
-	}
 	prebuffer = consumer_status == CS_STOPPED;
 	_producer_play();
 	if (producer_status == PS_PLAYING) {
@@ -1072,11 +1021,6 @@ void player_play(void)
 
 void player_pause(void)
 {
-	if (ip && ip_is_remote(ip) && consumer_status == CS_PLAYING) {
-		/* pausing not allowed */
-		player_stop();
-		return;
-	}
 	player_lock();
 
 	if (consumer_status == CS_STOPPED) {
@@ -1394,7 +1338,6 @@ void player_info_snapshot(void)
 		track_info_ref(player_info.ti);
 
 	player_info_priv.file_changed = 0;
-	player_info_priv.metadata_changed = 0;
 	player_info_priv.status_changed = 0;
 	player_info_priv.position_changed = 0;
 	player_info_priv.position_seeked = 0;
@@ -1404,12 +1347,3 @@ void player_info_snapshot(void)
 	player_info_priv_unlock();
 }
 
-void player_metadata_lock(void)
-{
-	cmus_mutex_lock(&player_info_mutex);
-}
-
-void player_metadata_unlock(void)
-{
-	cmus_mutex_unlock(&player_info_mutex);
-}

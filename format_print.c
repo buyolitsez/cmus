@@ -303,10 +303,9 @@ static int format_eval_cond(struct expr* expr, const struct format_option *fopts
 		}
 		return res;
 	}
-	if (strcmp(key, "stream") == 0) {
-		fo = find_fopt(fopts, "filename");
-		return fo && is_http_url(fo->fo_str);
-	}
+	/* internet radio was removed; kept for formats like %{?stream?...} */
+	if (strcmp(key, "stream") == 0)
+		return 0;
 	fo = find_fopt(fopts, key);
 	if (fo)
 		return !fo->empty;

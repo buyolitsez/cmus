@@ -345,9 +345,8 @@ Artists*, *Various*, *VA*, or *V/A*; or if *compilation* or *partofacompilation*
 are set to a truthy value; or if the ID3v2 *TCMP* frame is set). If so, the
 artist is named *<Various Artists>*.
 
-Note: If the filename is a URL, the artist/album tags are set to *<Stream>*. If
-it is a file, cmus sets the artist and/or album tags to *<No Name>* if they are
-not already set. These names will be treated the same way as other names for
+Note: cmus sets the artist and/or album tags to *<No Name>* if they are not
+already set. These names will be treated the same way as other names for
 sorting.
 
 In general, three levels of sorting are used in the library view: the artist
@@ -390,8 +389,6 @@ add [-l] [-p] [-q] [-Q] <file|dir|url|playlist>
 	prepend to play queue
 
 	Supported files are based on the loaded input plugins.
-
-	Supported URLs: Shoutcast (`http://`...).
 
 	A playlist line may carry the tags, so that the file is not read when
 	it is added (useful for files on a network mount, see contrib/cmus-b2):
@@ -1136,9 +1133,6 @@ id3_default_charset (ISO-8859-1)
 
 	Note: This is used only if the tag is not valid UTF-8.
 
-icecast_default_charset (ISO-8859-1)
-	Default character set to use for non-UTF-8 icecast stream metadata.
-
 	Note: This is used only if the metadata is not valid UTF-8.
 
 ignore_duplicates (false)
@@ -1426,7 +1420,7 @@ simple expressions and supported keys comparison (e.g. artist=albumartist).
 Its keys are:
 	format strings' special keys @br
 	configuration options @br
-	keyword *stream* [boolean] (returns true if track is a stream) @br
+	keyword *stream* [boolean] (always false, internet radio was removed) @br
 	keyword *lastfm_loved* [boolean] (returns true if the track is in *lastfm_loved_file*) @br
 	keyword *va* [boolean] (returns true if track's album is compilation)
 Else part can be skipped. A and B can contain string literals in *"* or *'*.
@@ -1646,7 +1640,7 @@ Ranges: *a-b* (>=a&<=b), *-b* (<=b), *a-* (>=a)
 
 @h2 Booleans
 
-*tag* (true if track has tags), *stream* (true if track is a stream)
+*tag* (true if track has tags), *stream* (always false)
 @br
 For short expressions: *~T* and *~s*
 
@@ -1812,8 +1806,7 @@ The unique bus name is `org.mpris.MediaPlayer2.cmus`.
 Metadata fields follow the naming convention of the specification:
 	https://www.freedesktop.org/wiki/Specifications/mpris-spec/metadata/
 The `xesam:url` field is a percent-encoded URI. Local files are reported as
-`file://` URIs. Additionally, the `cmus:stream_title` field is exposed if
-appropriate.
+`file://` URIs.
 
 @h1 BUGS
 

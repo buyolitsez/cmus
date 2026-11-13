@@ -425,7 +425,7 @@ static int handle_line(void *data, const char *line)
 
 	if (strchr(line, '\t')) {
 		add_tagged(line);
-	} else if (is_http_url(line) || is_cue_url(line)) {
+	} else if (is_cue_url(line)) {
 		add_url(line);
 	} else {
 		char *absolute = pl_env_var(line, NULL)
@@ -522,7 +522,7 @@ static void do_update_job(void *data)
 		rc = stat(ti->filename, &s);
 		if (rc || d->force || ti->mtime != s.st_mtime || ti->duration == 0) {
 			kind[i] = UPDATE_NONE;
-			if (!is_cue_url(ti->filename) && !is_http_url(ti->filename) && rc)
+			if (!is_cue_url(ti->filename) && rc)
 				kind[i] |= UPDATE_REMOVE;
 			else if (ti->mtime != s.st_mtime)
 				kind[i] |= UPDATE_MTIME_CHANGED;
