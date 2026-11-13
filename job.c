@@ -38,6 +38,7 @@
 #include "cue_utils.h"
 #include "pl_env.h"
 #include "misc.h"
+#include "keyval.h"
 
 #include <string.h>
 #include <unistd.h>
@@ -379,12 +380,72 @@ static void add_dir(const char *dirname, const char *root)
 	ptr_array_clear(&files);
 }
 
+/*
+ * Playlist line with tags, so that remote files (e.g. on a network mount) are
+ * added without reading them:
+ * filename TAB duration TAB mtime [TAB key TAB value]...
+ */
+static void add_tagged(const char *line)
+{
+	char *buf = xstrdup(line);
+	char *fields[64];
+	int n = 0, i;
+	char *s = buf;
+	struct track_info *ti;
+	unsigned int hash;
+	long mtime;
+
+	while (n < (int)N_ELEMENTS(fields)) {
+		fields[n++] = s;
+		s = strchr(s, '\t');
+		if (!s)
+			break;
+		*s++ = 0;
+	}
+	if (n < 3 || (fields[0][0] != '/' && !is_cue_url(fields[0]))) {
+		free(buf);
+		return;
+	}
+
+	hash = hash_str(fields[0]);
+	mtime = strtol(fields[2], NULL, 10);
+	cache_lock();
+	ti = lookup_cache_entry(fields[0], hash);
+	if (ti && ti->mtime == mtime && ti->duration > 0) {
+		track_info_ref(ti);
+	} else {
+		GROWING_KEYVALS(c);
+		int play_count = 0;
+
+		if (ti) {
+			play_count = ti->play_count;
+			cache_remove_ti(ti);
+		}
+		for (i = 3; i + 1 < n; i += 2)
+			keyvals_add(&c, fields[i], xstrdup(fields[i + 1]));
+		keyvals_terminate(&c);
+
+		ti = track_info_new(fields[0]);
+		track_info_set_comments(ti, c.keyvals);
+		ti->duration = strtol(fields[1], NULL, 10);
+		ti->mtime = mtime;
+		ti->play_count = play_count;
+		cache_add_ti(ti, hash);
+		track_info_ref(ti);
+	}
+	cache_unlock();
+	free(buf);
+	add_ti(ti);
+}
+
 static int handle_line(void *data, const char *line)
 {
 	if (worker_cancelling())
 		return 1;
 
-	if (is_http_url(line) || is_cue_url(line)) {
+	if (strchr(line, '\t')) {
+		add_tagged(line);
+	} else if (is_http_url(line) || is_cue_url(line)) {
 		add_url(line);
 	} else {
 		char *absolute = pl_env_var(line, NULL)

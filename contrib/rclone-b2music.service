@@ -1,0 +1,18 @@
+# Mounts music/ of the b2-player bucket for cmus (see contrib/cmus-b2).
+# Install: cp rclone-b2music.service ~/.config/systemd/user/ &&
+#          systemctl --user enable --now rclone-b2music
+[Unit]
+Description=rclone mount of the music bucket
+After=network-online.target
+
+[Service]
+Type=notify
+ExecStartPre=/usr/bin/mkdir -p %h/b2music
+ExecStart=/usr/bin/rclone mount b2music:buyolitsez-music/music %h/b2music \
+	--read-only --vfs-cache-mode full --vfs-cache-max-size 20G \
+	--vfs-cache-max-age 8760h --dir-cache-time 8760h --poll-interval 0
+ExecStop=/usr/bin/fusermount3 -u %h/b2music
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

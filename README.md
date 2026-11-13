@@ -100,3 +100,18 @@ rest of the code.
 Bug fixes and implementations of new features should be suggested as a
 [pull request](https://github.com/cmus/cmus/pulls) directly on GitHub.
 
+
+
+## Music from the B2 bucket
+
+Tracks from the bucket of [b2-player](https://github.com/buyolitsez/b2-player) are played from an rclone mount
+of `music/`, with its disk cache; the app's catalog gives the tags, so nothing is read over the network to fill the library.
+
+```bash
+cp contrib/rclone-b2music.service ~/.config/systemd/user/
+systemctl --user enable --now rclone-b2music   # mounts b2music:buyolitsez-music/music at ~/b2music
+contrib/cmus-b2                                # catalog and likes -> ~/.cache/cmus-b2, adds them to a running cmus
+```
+
+In `~/.config/cmus/rc`: `set lastfm_loved_file=~/.cache/cmus-b2/likes` (likes from the catalog and `state/likes.json`).
+Run `contrib/cmus-b2` again after the catalog changes; `:update-cache` drops tracks deleted from the bucket.
