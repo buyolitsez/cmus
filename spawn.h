@@ -20,5 +20,7 @@
 #define CMUS_SPAWN_H
 
 int spawn(char *argv[], int *status, int do_wait);
+/* runs argv and returns what it wrote to stdout (to be freed), NULL on error */
+char *spawn_output(char *argv[]);
 
 #endif

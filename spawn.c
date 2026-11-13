@@ -18,6 +18,7 @@
 
 #include "spawn.h"
 #include "file.h"
+#include "xmalloc.h"
 
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -107,4 +108,51 @@ int spawn(char *argv[], int *status, int do_wait)
 		}
 		return 0;
 	}
+}
+
+/* stdout of argv, NULL if it could not be run */
+char *spawn_output(char *argv[])
+{
+	char *out = NULL;
+	size_t size = 0, alloc = 0;
+	int fds[2];
+	pid_t pid;
+
+	if (pipe(fds))
+		return NULL;
+	pid = fork();
+	if (pid == -1) {
+		close(fds[0]);
+		close(fds[1]);
+		return NULL;
+	}
+	if (pid == 0) {
+		/* stderr would draw over the screen */
+		int null = open("/dev/null", O_WRONLY);
+
+		dup2(fds[1], 1);
+		if (null != -1)
+			dup2(null, 2);
+		close(fds[0]);
+		close(fds[1]);
+		execvp(argv[0], argv);
+		_exit(127);
+	}
+	close(fds[1]);
+	while (1) {
+		ssize_t rc;
+
+		if (alloc - size < 4096) {
+			alloc = alloc * 2 + 4096;
+			out = xrealloc(out, alloc);
+		}
+		rc = read(fds[0], out + size, alloc - size - 1);
+		if (rc <= 0)
+			break;
+		size += rc;
+	}
+	close(fds[0]);
+	waitpid(pid, NULL, 0);
+	out[size] = 0;
+	return out;
 }

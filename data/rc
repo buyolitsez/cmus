@@ -63,6 +63,10 @@ bind common 5 view browser
 bind common 6 view filters
 bind common 7 view settings
 bind common 8 view lyrics
+bind common 9 view torrents
+bind torrents a torrent new
+bind torrents space torrent toggle
+bind torrents D torrent remove
 bind common H filter lastfm_loved
 bind common A filter
 

@@ -1,0 +1,14 @@
+# Seeds the torrents added by contrib/cmus-b2-add from the bucket mount.
+# Install: cp cmus-b2-seed.service ~/.config/systemd/user/ && edit ExecStart to this repo's path &&
+#          systemctl --user enable --now cmus-b2-seed
+[Unit]
+Description=Seed torrents of the music bucket
+After=network-online.target rclone-b2music.service
+
+[Service]
+ExecStart=%h/projects/cmus-b2/contrib/cmus-b2-seed run
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

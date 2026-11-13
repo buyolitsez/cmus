@@ -37,6 +37,7 @@
 #include "input.h"
 #include "lastfm_loved.h"
 #include "lyrics.h"
+#include "torrents.h"
 #include "download.h"
 #include "xstrjoin.h"
 #include "track_info.h"
@@ -692,7 +693,7 @@ static void toggle_confirm_run(void *data)
 
 const char * const view_names[NR_VIEWS + 1] = {
 	"tree", "sorted", "playlist", "queue", "browser", "filters", "settings",
-	"lyrics", NULL
+	"lyrics", "torrents", NULL
 };
 
 static void get_play_library(void *data, char *buf, size_t size)
@@ -1613,6 +1614,19 @@ static void set_download_dir(void *data, const char *buf)
 	update_full();
 }
 
+static void get_torrents_program(void *data, char *buf, size_t size)
+{
+	if (torrents_program)
+		strscpy(buf, torrents_program, size);
+}
+
+static void set_torrents_program(void *data, const char *buf)
+{
+	free(torrents_program);
+	torrents_program = buf[0] ? expand_filename(buf) : NULL;
+	torrents_reload(1);
+}
+
 static void get_lastfm_loved_file(void *data, char *buf, size_t size)
 {
 	strscpy(buf, lastfm_loved_file, size);
@@ -1667,6 +1681,7 @@ static const struct {
 	DN(id3_default_charset)
 	{ "lastfm_loved_file", get_lastfm_loved_file, set_lastfm_loved_file, NULL, 0 },
 	DN_FLAGS(lyrics_program, OPT_PROGRAM_PATH)
+	DN_FLAGS(torrents_program, OPT_PROGRAM_PATH)
 	DN(lib_sort)
 	DN(output_plugin)
 	DN(passwd)

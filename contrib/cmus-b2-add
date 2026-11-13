@@ -7,9 +7,10 @@ Shows the torrent's folders and files as a tree to mark what to download, asks
 Claude where each one goes in the music folder (next to the artist's albums if
 the artist is there, otherwise a new path in the same genre/artist/album
 layout), and lets you accept, skip or type another path. Then downloads only
-the marked files (no seeding), uploads them with sync-music.sh, republishes
-the catalog, refreshes the cmus library and removes the local copy, keeps it
-(cmus plays it as downloaded) or asks, by the cmus option added_local_copy.
+the marked files, uploads them with sync-music.sh, republishes the catalog,
+refreshes the cmus library and hands the torrent to cmus-b2-seed, which seeds
+it from the bucket. The local copy is removed, kept (cmus plays it as
+downloaded) or you are asked, by the cmus option added_local_copy.
 
 In cmus: ":bind common T shell footclient -N <repo>/contrib/cmus-b2-add" opens
 it in a new window. Needs python-libtorrent, python-anthropic and ANTHROPIC_API_KEY
@@ -244,8 +245,9 @@ def pick(scr, title, files):
             return None
 
 
-def download(info, files, save_path):
-    ses = lt.session({"listen_interfaces": "0.0.0.0:6881,[::]:6881"})
+def download(info, files, save_path, resume):
+    """Downloads the files and stops; their resume data lets cmus-b2-seed seed them without a check."""
+    ses = lt.session({"listen_interfaces": "0.0.0.0:6881,[::]:6881", "alert_mask": lt.alert_category.storage})
     prio = [0] * info.num_files()
     for i in files:
         prio[i] = 4
@@ -260,6 +262,11 @@ def download(info, files, save_path):
             break
         time.sleep(1)
     print()
+    h.save_resume_data()
+    while not (alerts := [x for x in ses.pop_alerts() if isinstance(x, lt.save_resume_data_alert)]):
+        ses.wait_for_alert(1000)
+    with open(resume, "wb") as f:
+        f.write(lt.write_resume_data_buf(alerts[0].params))
     ses.remove_torrent(h)
 
 
@@ -327,7 +334,8 @@ def main():
         return
 
     incoming = os.path.join(cache, "incoming", str(info.info_hashes().get_best()))
-    download(info, [i for src in plan for i in albums[src]], incoming)
+    resume = incoming + ".resume"
+    download(info, [i for src in plan for i in albums[src]], incoming, resume)
     for src, target in plan.items():
         dst = os.path.join(music, target)
         if src:
@@ -344,7 +352,20 @@ def main():
     subprocess.run([os.path.join(tools, "publish-catalog.sh")], check=True)
     # the mount keeps its directory listings (see rclone-b2music.service); SIGHUP drops them
     subprocess.run(["pkill", "-HUP", "-f", f"rclone mount {a.remote}/music"])
-    subprocess.run([os.path.join(os.path.dirname(os.path.realpath(__file__)), "cmus-b2")], check=True)
+    here = os.path.dirname(os.path.realpath(__file__))
+    subprocess.run([os.path.join(here, "cmus-b2")], check=True)
+
+    # seeding from the bucket (contrib/cmus-b2-seed), with the files at their library paths
+    seed_map = {}
+    for src, target in plan.items():
+        for i in albums[src]:
+            rel = fs.file_path(i)[len(src) + 1:] if src else os.path.basename(fs.file_path(i))
+            seed_map[str(i)] = os.path.join(target, rel)
+    with open(incoming + ".map", "w", encoding="utf-8") as f:
+        json.dump(seed_map, f, ensure_ascii=False)
+    subprocess.run([os.path.join(here, "cmus-b2-seed"), "add", path, incoming + ".map", resume], check=True)
+    os.remove(incoming + ".map")
+    os.remove(resume)
 
     keep = option("added_local_copy") or "ask"
     for target in plan.values():
@@ -362,4 +383,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (Exception, SystemExit) as e:  # keep the window open to read what went wrong
+        if not (isinstance(e, SystemExit) and e.code in (None, 0)):
+            print(e if isinstance(e, SystemExit) else f"Error: {e!r}")
+            ask("Enter to close")
+        raise

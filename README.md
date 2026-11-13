@@ -125,12 +125,20 @@ tracks or albums there (in the background, keeping mtimes, so `sync-music.sh` ha
 
 Filters: `H` shows only liked tracks, `A` all tracks again (`:filter lastfm_loved`, `:filter downloaded`, `:filter`).
 
-Adding albums from a torrent: `:bind common T shell footclient -N <repo>/contrib/cmus-b2-add` opens a window with the
-files of the newest `.torrent` with music in `~/Downloads` as a tree (Space marks folders or files). Claude suggests where each
-album goes in `~/Music` (accept, skip or type another path), then the marked files are downloaded without seeding,
-uploaded with `sync-music.sh`, the catalog is republished and the cmus library refreshed. `set added_local_copy=ask`
-(default), `delete` or `keep` decides what happens to the local copy. Needs `python-libtorrent`, `python-anthropic`
-and `ANTHROPIC_API_KEY=...` in `~/.config/cmus-b2/env`.
+Adding albums from a torrent: `:bind common T shell footclient -N <repo>/contrib/cmus-b2-add` (or `a` in the torrents
+view) opens a window with the files of the newest `.torrent` with music in `~/Downloads` as a tree (Space marks folders
+or files). Claude suggests where each album goes in `~/Music` (accept, skip or type another path), then the marked files
+are downloaded, uploaded with `sync-music.sh`, the catalog is republished and the cmus library refreshed.
+`set added_local_copy=ask` (default), `delete` or `keep` decides what happens to the local copy. Needs
+`python-libtorrent`, `python-anthropic` and `ANTHROPIC_API_KEY=...` in `~/.config/cmus-b2/env`.
+
+Seeding: `contrib/cmus-b2-seed.service` (edit the path, then `systemctl --user enable --now cmus-b2-seed`) seeds the
+added torrents from the bucket mount, with the files at their library paths and nothing downloaded; files whose tags
+were changed later are just not seeded. View 9 lists the torrents (`:set torrents_program=<repo>/contrib/cmus-b2-seed`
+and, with an existing autosave, `:bind common 9 view torrents`, `:bind torrents a torrent new`,
+`:bind torrents space torrent toggle`, `:bind torrents D torrent remove`): seeding on or off, speed, peers, what was sent
+this month and in total. What is sent is read from the bucket, so a month is capped by `SEED_LIMIT_GB` in
+`~/.config/cmus-b2/env` (default 100): a warning in cmus at 80%, seeding pauses at 100% until the next month.
 
 In `~/.config/cmus/rc`: `set lastfm_loved_file=~/.cache/cmus-b2/likes` (likes from the catalog and `state/likes.json`).
 Run `contrib/cmus-b2` again after the catalog changes; `:update-cache` drops tracks deleted from the bucket.
