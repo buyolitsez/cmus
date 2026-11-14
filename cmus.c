@@ -136,6 +136,7 @@ void cmus_prev_album(void)
 void cmus_play_file(const char *filename)
 {
 	struct track_info *ti;
+	struct tree_track *lt;
 
 	cache_lock();
 	ti = cache_get_ti(filename, 0);
@@ -145,6 +146,13 @@ void cmus_play_file(const char *filename)
 		return;
 	}
 
+	/* a library track goes on with its album, as if it were picked in the library */
+	lt = lib_find_track(ti);
+	if (lt) {
+		track_info_unref(ti);
+		ti = lib_set_track(lt);
+		play_library = 1;
+	}
 	player_play_file(ti);
 }
 
