@@ -1243,7 +1243,7 @@ repeat_current (false)
 	Repeat current track forever.
 
 resume (false)
-	Resume playback on startup.
+	Restore the last track and position on startup, paused.
 
 rewind_offset (5) [-1-9999]
 	If the position of the current track is smaller than rewind_offset,
