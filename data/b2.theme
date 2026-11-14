@@ -55,8 +55,8 @@ set color_info=29
 # rows like in the app: number, title, heart for likes, duration
 set format_trackwin= %02n. %t%{?lastfm_loved? ♥}%= %{?downloaded?↓ }%d 
 set format_trackwin_va= %02n. %t · %a%{?lastfm_loved? ♥}%= %{?downloaded?↓ }%d 
-set format_trackwin_album= %l%= %y · %{duration} 
-set format_treewin=   %l%= %y 
+set format_trackwin_album= %l%{?rating? ★%{rating}}%= %y · %{duration} 
+set format_treewin=   %l%= %{?rating?★%{rating} · }%y 
 set format_playlist= %-24%a %t%{?lastfm_loved? ♥}%= %l · %{?downloaded?↓ }%d 
 set format_playlist_va= %-24%A %t · %a%{?lastfm_loved? ♥}%= %l · %{?downloaded?↓ }%d 
 set format_current= %t%{?lastfm_loved? ♥} · %a%= %l %{?y?· %y} 

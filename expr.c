@@ -29,6 +29,7 @@
 #include "convert.h"
 #include "download.h"
 #include "lastfm_loved.h"
+#include "album_ratings.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -451,6 +452,7 @@ static const struct {
 	{ "media",	EXPR_STR	},
 	{ "originaldate",EXPR_INT	},
 	{ "play_count", EXPR_INT	},
+	{ "rating",	EXPR_INT	},
 	{ "stream",	EXPR_BOOL	},
 	{ "tag",	EXPR_BOOL	},
 	{ "title",	EXPR_STR	},
@@ -925,6 +927,8 @@ static int int_val(const char *key, struct track_info *ti)
 		val = ti->play_count;
 	} else if (strcmp(key, "bpm") == 0) {
 		val = ti->bpm;
+	} else if (strcmp(key, "rating") == 0) {
+		val = album_rating(ti->albumartist, ti->album);
 	} else {
 		val = comments_get_int(ti->comments, key);
 	}
