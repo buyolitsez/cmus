@@ -161,5 +161,6 @@ copy, so likes from the phone are kept.
 `contrib/cmus-b2-likes.timer` brings likes from the phone within a minute (`cmus-b2 --likes`, install as written in it).
 
 Album ratings 1-10 come from the listening diary through `state/ratings.json` (see b2-player's `tools/sync-ratings.py`)
-and show as ★ in the `b2` theme. `:run cmus-b2-rate 8` rates the albums of the selected tracks (it goes to the diary
+and show as ★ in the `b2` theme. `:bind common * push run cmus-b2-rate ` lets `*`, a number and Enter rate the albums of the selected tracks
+(the same as `:run cmus-b2-rate 8`) (it goes to the diary
 through the same file); `:filter rating>=8` shows albums rated 8 and up, `:filter rating=-1` the unrated ones.

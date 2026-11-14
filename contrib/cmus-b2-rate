@@ -21,6 +21,11 @@ def cmus(*cmd):
     return subprocess.run(["cmus-remote", *cmd], capture_output=True, text=True).stdout
 
 
+def clean(s):
+    """As contrib/cmus-b2 writes the album artist and album."""
+    return " ".join(str(s).split())
+
+
 def option(name):
     for line in cmus("-Q").splitlines():
         if line.startswith(f"set {name} "):
@@ -55,6 +60,23 @@ def main():
         cmus("-C", "echo No bucket tracks selected")
         return 1
 
+    # Show the rating in cmus right away; the upload below takes a few seconds.
+    ratings_file = os.path.join(OUT, "ratings")
+    try:
+        with open(ratings_file, "rb") as f:
+            fields = f.read().decode().split("\0")[:-1]
+    except FileNotFoundError:
+        fields = []
+    shown = {(fields[i], fields[i + 1]): fields[i + 2] for i in range(0, len(fields) - 2, 3)}
+    for al in selected.values():
+        shown[(clean(al["artist"]), clean(al["title"]))] = str(rating)
+    with open(ratings_file + ".tmp", "wb") as f:
+        f.write("".join(f"{artist}\0{album}\0{r}\0" for (artist, album), r in shown.items()).encode())
+    os.replace(ratings_file + ".tmp", ratings_file)
+    what = next(iter(selected.values()))["title"] if len(selected) == 1 else f"{len(selected)} albums"
+    cmus("-C", f"set album_ratings_file={ratings_file}")
+    cmus("-C", f"echo Rated {rating}: {what}")
+
     r = subprocess.run(["rclone", "cat", REMOTE], capture_output=True)
     state = json.loads(r.stdout) if r.returncode == 0 and r.stdout else {"version": 1, "albums": {}}
     now = int(time.time() * 1000)
@@ -62,8 +84,6 @@ def main():
         state["albums"][aid] = {"rating": rating, "time": now, "pending": True}
     subprocess.run(["rclone", "rcat", REMOTE], input=json.dumps(state, indent=1, ensure_ascii=False).encode(), check=True)
     subprocess.run([os.path.join(os.path.dirname(os.path.realpath(__file__)), "cmus-b2"), "--likes"], check=True)
-    what = next(iter(selected.values()))["title"] if len(selected) == 1 else f"{len(selected)} albums"
-    cmus("-C", f"echo Rated {rating}: {what}")
     return 0
 
 
