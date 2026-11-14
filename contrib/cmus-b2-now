@@ -10,6 +10,7 @@ later, the command line says so.
 "cmus-b2-now --resume" plays the track the file names, from where it stopped:
 ":bind common R shell cmus-b2-now --resume".
 """
+import fcntl
 import gzip
 import json
 import os
@@ -75,10 +76,11 @@ def fetch():
     return json.loads(r.stdout) if r.returncode == 0 and r.stdout else None
 
 
-def position_now(h):
-    """A track still playing on the phone has moved on since the file was written."""
-    ms = h["position_ms"] + (max(0, time.time() * 1000 - h["time"]) if h.get("playing") else 0)
-    return ms / 1000
+def position_now(h, duration):
+    """A track still playing on the phone has moved on since the file was written. Past its end,
+    the phone stopped without saying so, and the written position is the better guess."""
+    moved = (h["position_ms"] + max(0, time.time() * 1000 - h["time"])) / 1000
+    return moved if h.get("playing") and moved < duration else h["position_ms"] / 1000
 
 
 def write(tid, position, playing):
@@ -97,13 +99,16 @@ def write(tid, position, playing):
 def hook(args):
     """status_display_program: write on play, on pause or stop after playing, else tell about the phone."""
     status = args[args.index("status") + 1] if "status" in args else ""
+    os.makedirs(OUT, exist_ok=True)
+    # one status change at a time, so the uploads land in order
+    lock = open(STATE + ".lock", "w")
+    fcntl.flock(lock, fcntl.LOCK_EX)
     pid = subprocess.run(["pidof", "-s", "cmus"], capture_output=True, text=True).stdout.strip()
     try:
         with open(STATE) as f:
             prev_pid, prev_status = f.read().split()
     except (FileNotFoundError, ValueError):
         prev_pid = prev_status = ""
-    os.makedirs(OUT, exist_ok=True)
     with open(STATE, "w") as f:
         f.write(f"{pid} {status}\n")
     q = query()
@@ -117,7 +122,7 @@ def hook(args):
         if h and h.get("device") == "phone":
             t = next((t for tid, _, t in catalog_tracks() if tid == h["track"]), None)
             if t:
-                cmus("-C", f"echo Phone: {t['title']} · {fmt(position_now(h))}, press R to continue")
+                cmus("-C", f"echo Phone: {t['title']} · {fmt(position_now(h, t['duration']))}, press R to continue")
 
 
 def resume():
@@ -139,7 +144,7 @@ def resume():
     else:
         local = os.path.join(download, key) if download else ""
         filename = local if local and os.path.exists(local) else os.path.join(bucket, key)
-    position = min(position_now(h), t["duration"] - 1)
+    position = position_now(h, t["duration"])
     cmus("-C", f"player-play {filename}")
     # over the rclone mount the file takes a moment to open, and a seek before that is lost
     for _ in range(100):
