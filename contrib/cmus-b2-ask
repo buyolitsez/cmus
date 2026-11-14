@@ -1,0 +1,8 @@
+#!/bin/sh
+# The assistant of b2-player in a terminal, playing in this cmus: a chat with Claude that finds and plays music,
+# answers about listening history and changes likes and playlists after y. It is b2-player's cli/, shared with
+# the app, installed from a b2-player checkout with
+#   ./gradlew --configure-on-demand :cli:installDist && rm -rf ~/.local/opt/cmus-b2-ask && cp -r cli/build/install/cmus-b2-ask ~/.local/opt/
+# Arguments are sent as the first message. Bind it with ":bind common O shell footclient -N <repo>/contrib/cmus-b2-ask".
+export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk}"
+exec ~/.local/opt/cmus-b2-ask/bin/cmus-b2-ask "$@"
