@@ -8,6 +8,8 @@ After=network-online.target
 
 [Service]
 Type=notify
+# a mount that died leaves a stale FUSE point behind
+ExecStartPre=-/usr/bin/fusermount3 -uz %h/b2music
 ExecStartPre=/usr/bin/mkdir -p %h/b2music
 ExecStart=/usr/bin/rclone mount b2music:buyolitsez-music/music %h/b2music \
 	--read-only --vfs-cache-mode full --vfs-cache-max-size 20G \
