@@ -129,6 +129,11 @@ writes the track and position to `state/now-playing.json` on play, pause and tra
 offers to continue it. When cmus starts or stops after the phone played, the command line says what it was;
 `:bind common R shell <repo>/contrib/cmus-b2-now --resume` plays it from where the phone stopped.
 
+Assistant: `:bind common O shell footclient -N <repo>/contrib/cmus-b2-ask` opens a chat with Claude, the same assistant
+as in the app (b2-player's `core/`): it finds and plays music in this cmus, answers about listening history and changes
+likes and playlists after `y`. Install it from b2-player as its README says (JDK 21); it uses `ANTHROPIC_API_KEY=...` in
+`~/.config/cmus-b2/env`.
+
 Filters: `H` shows only liked tracks, `A` all tracks again (`:filter lastfm_loved`, `:filter downloaded`, `:filter`).
 
 Adding albums from a torrent: `:bind common T shell footclient -N <repo>/contrib/cmus-b2-add` (or `a` in the torrents
