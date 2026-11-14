@@ -95,7 +95,7 @@ if likes_changed:
     with open(likes_file + ".tmp", "wb") as f:
         f.write(likes)
     os.replace(likes_file + ".tmp", likes_file)
-cmus_running = subprocess.run(["cmus-remote", "-C", "echo"], capture_output=True).returncode == 0
+cmus_running = subprocess.run(["cmus-remote", "-Q"], capture_output=True).returncode == 0
 if a.likes:
     if likes_changed and cmus_running:
         subprocess.run(["cmus-remote", "-C", f"set lastfm_loved_file={likes_file}"], check=True)
