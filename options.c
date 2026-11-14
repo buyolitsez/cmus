@@ -37,6 +37,7 @@
 #include "input.h"
 #include "lastfm_loved.h"
 #include "lyrics.h"
+#include "torrents.h"
 #include "download.h"
 #include "xstrjoin.h"
 #include "track_info.h"
@@ -692,7 +693,7 @@ static void toggle_confirm_run(void *data)
 
 const char * const view_names[NR_VIEWS + 1] = {
 	"tree", "sorted", "playlist", "queue", "browser", "filters", "settings",
-	"lyrics", NULL
+	"lyrics", "torrents", NULL
 };
 
 static void get_play_library(void *data, char *buf, size_t size)
@@ -821,6 +822,27 @@ static void toggle_aaa_mode(void *data)
 	aaa_mode++;
 	aaa_mode %= 3;
 	update_statusline();
+}
+
+/* what contrib/cmus-b2-add does with the local copy of an uploaded album */
+static int added_local_copy;
+static const char * const added_local_copy_names[] = {
+	"ask", "delete", "keep", NULL
+};
+
+static void get_added_local_copy(void *data, char *buf, size_t size)
+{
+	strscpy(buf, added_local_copy_names[added_local_copy], size);
+}
+
+static void set_added_local_copy(void *data, const char *buf)
+{
+	parse_enum(buf, 0, 2, added_local_copy_names, &added_local_copy);
+}
+
+static void toggle_added_local_copy(void *data)
+{
+	added_local_copy = (added_local_copy + 1) % 3;
 }
 
 static void get_repeat(void *data, char *buf, size_t size)
@@ -1592,6 +1614,19 @@ static void set_download_dir(void *data, const char *buf)
 	update_full();
 }
 
+static void get_torrents_program(void *data, char *buf, size_t size)
+{
+	if (torrents_program)
+		strscpy(buf, torrents_program, size);
+}
+
+static void set_torrents_program(void *data, const char *buf)
+{
+	free(torrents_program);
+	torrents_program = buf[0] ? expand_filename(buf) : NULL;
+	torrents_reload(1);
+}
+
 static void get_lastfm_loved_file(void *data, char *buf, size_t size)
 {
 	strscpy(buf, lastfm_loved_file, size);
@@ -1631,6 +1666,7 @@ static const struct {
 	unsigned int flags;
 } simple_options[] = {
 	DT(aaa_mode)
+	DT(added_local_copy)
 	DT(auto_reshuffle)
 	DN(buffer_seconds)
 	DN(bucket_dir)
@@ -1645,6 +1681,7 @@ static const struct {
 	DN(id3_default_charset)
 	{ "lastfm_loved_file", get_lastfm_loved_file, set_lastfm_loved_file, NULL, 0 },
 	DN_FLAGS(lyrics_program, OPT_PROGRAM_PATH)
+	DN_FLAGS(torrents_program, OPT_PROGRAM_PATH)
 	DN(lib_sort)
 	DN(output_plugin)
 	DN(passwd)

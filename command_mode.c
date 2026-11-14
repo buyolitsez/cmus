@@ -46,6 +46,7 @@
 #include "load_dir.h"
 #include "help.h"
 #include "lyrics.h"
+#include "torrents.h"
 #include "op.h"
 #include "mpris.h"
 #include "job.h"
@@ -355,6 +356,8 @@ struct window *current_win(void)
 		return help_win;
 	case LYRICS_VIEW:
 		return lyrics_win;
+	case TORRENTS_VIEW:
+		return torrents_win;
 	case FILTERS_VIEW:
 	default:
 		return filters_win;
@@ -1390,6 +1393,11 @@ static void cmd_view(char *arg)
 	if (parse_enum(arg, 1, NR_VIEWS, view_names, &view) && (view - 1) != cur_view) {
 		set_view(view - 1);
 	}
+}
+
+static void cmd_torrent(char *arg)
+{
+	torrents_run(arg);
 }
 
 static void cmd_push(char *arg)
@@ -2691,6 +2699,7 @@ struct command commands[] = {
 	{ "shuffle",               cmd_reshuffle,        0, 0,  NULL,                 0, CMD_HIDDEN },
 	{ "source",                cmd_source,           1, 1,  expand_files,         0, CMD_UNSAFE },
 	{ "toggle",                cmd_toggle,           1, 1,  expand_toptions,      0, 0          },
+	{ "torrent",               cmd_torrent,          1, 1,  NULL,                 0, 0          },
 	{ "tqueue",                cmd_tqueue,           0, 1,  NULL,                 0, 0          },
 	{ "unbind",                cmd_unbind,           1, 1,  expand_unbind_args,   0, 0          },
 	{ "unmark",                cmd_unmark,           0, 0,  NULL,                 0, 0          },

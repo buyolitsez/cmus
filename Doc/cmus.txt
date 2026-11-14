@@ -80,6 +80,11 @@ Lyrics view (8)
 	Lyrics of the playing track, printed by *lyrics_program*. For LRC lyrics
 	(lines starting with [mm:ss.xx]) the line being sung is highlighted.
 
+Torrents view (9)
+	Torrents and their seeding, printed by *torrents_program* (see
+	contrib/cmus-b2-seed). *a* adds a torrent, *space* turns seeding on or
+	off, *D* removes the torrent from the list. Refreshes every few seconds.
+
 @h1 COMMAND LINE
 
 Everything in cmus is implemented as commands which can be typed at the command line
@@ -261,6 +266,7 @@ I                       echo {}
 6                       view filters
 7                       view settings
 8                       view lyrics
+9                       view torrents
 
 mouse_scroll_up_title   left-view
 mouse_scroll_down_title right-view
@@ -333,6 +339,13 @@ space                   win-activate
 backspace               browser-up
 i                       toggle show_hidden
 u                       win-update
+@endpre
+
+@h2 Torrents
+@pre
+a                       torrent new
+space                   torrent toggle
+D                       torrent remove
 @endpre
 
 
@@ -686,6 +699,10 @@ toggle <option>
 	Toggles the value of a toggle-able option (all booleans and the options
 	*shuffle* and *aaa_mode*).
 
+torrent <action>
+	Runs *torrents_program* with <action> and the id of the selected line in
+	the torrents view, then refreshes the view.
+
 tqueue [NUM]
 	Queues NUM (default 1) random tracks from the library. See also
 	*lqueue*.
@@ -891,6 +908,10 @@ aaa_mode (all) [all, artist, album]
 	
 	For example, if set to *artist*, the player behaves like there were only
 	the files of the currently playing artist in the library.
+
+added_local_copy (ask) [ask, delete, keep]
+	What contrib/cmus-b2-add does with the local copy of an album once it is
+	uploaded to the bucket: ask, delete it, or keep it as downloaded.
 
 altformat_current [`Format String`]
 	Alternative format string for the line displaying currently playing
@@ -1292,6 +1313,11 @@ stop_after_queue (false)
 
 time_show_leading_zero (true)
 	Pad durations of less than 10 minutes with a leading 0.
+
+torrents_program () [command]
+	Program for the torrents view: "status" prints its lines as
+	"<id><tab><text>", and the *torrent* command runs it with an action and
+	the id of the selected line. See contrib/cmus-b2-seed.
 
 tree_width_percent (33) [1-100]
 	Percentage of the window width to use for left pane.

@@ -1,0 +1,402 @@
+#!/usr/bin/env python3
+"""Add albums from a .torrent to the music library and the B2 bucket.
+
+  cmus-b2-add [file.torrent]    # by default the newest .torrent with music in ~/Downloads
+
+Shows the torrent's folders and files as a tree to mark what to download, asks
+Claude where each one goes in the music folder (next to the artist's albums if
+the artist is there, otherwise a new path in the same genre/artist/album
+layout); you answer in words or with paths until you accept. Then downloads only
+the marked files, uploads them with sync-music.sh, republishes the catalog,
+refreshes the cmus library and hands the torrent to cmus-b2-seed, which seeds
+it from the bucket. The local copy is removed, kept (cmus plays it as
+downloaded) or you are asked, by the cmus option added_local_copy.
+
+In cmus: ":bind common T shell footclient -N <repo>/contrib/cmus-b2-add" opens
+it in a new window. Needs python-libtorrent, python-anthropic and ANTHROPIC_API_KEY
+(in the environment or as ANTHROPIC_API_KEY=... in ~/.config/cmus-b2/env).
+"""
+import argparse
+import curses
+import glob
+import gzip
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+import anthropic
+import libtorrent as lt
+
+AUDIO_EXT = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".ape", ".wv", ".aac"}
+DISC_DIR = re.compile(r"^(cd|disc|disk|диск)\s*\d+\b", re.I)
+MODEL = "claude-sonnet-5-5"
+# folder names that say nothing about the artist, not used to find the artist's folder
+_WORD = r"(albums?|discography|studio|live|singles?|compilations?|collection|bootlegs?|other|eps?|mp3|flac|cd|disc)"
+GENERIC = re.compile(rf"^[\W\d]*{_WORD}([\W\d]+{_WORD})*[\W\d]*$", re.I)
+
+p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+p.add_argument("torrent", nargs="?")
+p.add_argument("--music", default="~/Music")
+p.add_argument("--remote", default="b2music:buyolitsez-music", help="rclone path of the bucket")
+p.add_argument("--tools", default="~/projects/b2-player/tools", help="sync-music.sh and publish-catalog.sh")
+a = p.parse_args()
+music = os.path.expanduser(a.music)
+tools = os.path.expanduser(a.tools)
+cache = os.path.expanduser("~/.cache/cmus-b2")
+
+
+def ask(prompt):
+    try:
+        return input(prompt).strip()
+    except EOFError:
+        sys.exit(1)
+
+
+def option(name):
+    """A cmus option, if cmus is running."""
+    out = subprocess.run(["cmus-remote", "-Q"], capture_output=True, text=True).stdout
+    return next((l[len(f"set {name} "):] for l in out.splitlines() if l.startswith(f"set {name} ")), "")
+
+
+def size(n):
+    return f"{n / 2**30:.1f} GB" if n >= 2**30 else f"{n / 2**20:.0f} MB"
+
+
+def album_of(path):
+    """The album folder of an audio file: its folder, or the parent of CD1/Disc 2."""
+    d = os.path.dirname(path)
+    return os.path.dirname(d) if DISC_DIR.match(os.path.basename(d)) else d
+
+
+def library_listing(names):
+    """The part of the library Claude needs: genres and artists (two levels), a few album folders of
+    each genre for the naming style, and everything under the folders whose names occur in names.
+    From the bucket's catalog, as the music folder may keep only part of the library."""
+    os.makedirs(cache, exist_ok=True)
+    catalog = os.path.join(cache, "catalog.json.gz")
+    subprocess.run(["rclone", "copyto", f"{a.remote}/catalog.json.gz", catalog], check=True)
+    with gzip.open(catalog, "rt", encoding="utf-8") as f:
+        albums = sorted({album_of(t["path"]) for al in json.load(f)["albums"] for t in al["tracks"]})
+    dirs = set()
+    for d in albums:
+        while d and d not in dirs:
+            dirs.add(d)
+            d = os.path.dirname(d)
+    hay = names.casefold()
+    shown = {d for d in dirs if d.count("/") < 2 or any(
+        len(c) >= 4 and not GENERIC.search(c) and c.casefold() in hay for c in d.split("/")[1:3])}
+    samples, seen = {}, set()
+    for d in albums:  # one album of each artist, a few per genre
+        genre, artist = d.split("/")[0], "/".join(d.split("/")[:2])
+        if artist not in seen and len(samples.setdefault(genre, [])) < 4:
+            seen.add(artist)
+            samples[genre].append(d)
+    return "\n".join(sorted(shown | {d for v in samples.values() for d in v}))
+
+
+def load_env():
+    env = os.path.expanduser("~/.config/cmus-b2/env")
+    if os.path.exists(env):
+        for line in open(env, encoding="utf-8"):
+            k, _, v = line.strip().partition("=")
+            if k and not k.startswith("#"):
+                os.environ.setdefault(k, v.strip().strip("'\""))
+
+
+def plan_albums(torrent_name, albums):
+    """Where each album goes (relative to the music folder): Claude proposes a plan for all of them,
+    you answer in words ("this is art pop", "skip the live album", a path) until you accept it."""
+    listing = "\n".join(
+        f"- {src or '(torrent root)'}\n" + "".join(f"    {n}\n" for n in names[:40])
+        for src, names in albums.items())
+    library = library_listing("\n".join([torrent_name, *albums]))
+    prompt = f"""Folders of my music library, relative to the library root: all genres and artists, a few
+albums of each genre, and the folders whose names occur in the torrent:
+<library>
+{library}
+</library>
+
+I am adding albums from the torrent "{torrent_name}". Their folders in the torrent, with the files in each:
+<albums>
+{listing}</albums>
+
+For each album choose the folder it should have in the library, relative to the library root.
+- If the library already has this album (maybe under another folder name or edition), set "exists" to its
+  folder and "target" to "". Otherwise "exists" is "".
+- If the artist already has a folder, put the album inside it, at the same level and with the same naming
+  style as the artist's other albums (for example "YYYY - Title" if the others are named like that).
+  But if the artist's albums sit in a folder copied as is from a torrent (names with Collection, Discography,
+  mp3, FLAC, "1 Albums" and the like), do not repeat that: use "<genre>/<Artist>/YYYY - Title" in that genre.
+- Otherwise make a new artist folder under the genre folder that fits best (top-level folders are genres,
+  some have subgenres; ignore service folders such as torrents, unknown, my, copying), and name the album
+  folder like most albums in that genre.
+- Use the real artist and album names (from the folder and file names), without release-group tags,
+  bitrate or tracker names; keep the year if known.
+- The target must be a folder that does not exist in the library yet; never add suffixes to make it new.
+Answer with one entry per album, "source" exactly as given. I may answer with corrections in my own words;
+then answer with the whole plan again."""
+    schema = {
+        "type": "object",
+        "properties": {"albums": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"source": {"type": "string"}, "target": {"type": "string"}, "exists": {"type": "string"},
+                           "why": {"type": "string", "description": "a few words, e.g. 'artist exists' or 'new artist in rock'"}},
+            "required": ["source", "target", "exists", "why"], "additionalProperties": False}}},
+        "required": ["albums"], "additionalProperties": False,
+    }
+    load_env()
+    client, messages = anthropic.Anthropic(), [{"role": "user", "content": prompt}]
+    while True:
+        print("Asking Claude where to put them...")
+        r = client.beta.messages.create(
+            model=MODEL, max_tokens=8000, messages=messages,
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
+            betas=["server-side-fallback-2026-07-01"], fallbacks="default")
+        if r.stop_reason != "end_turn":
+            sys.exit(f"Claude did not answer ({r.stop_reason})")
+        answer = json.loads(next(b.text for b in r.content if b.type == "text"))["albums"]
+        plan, taken = {}, []
+        print()
+        for x in answer:
+            src, target, exists = x["source"], x["target"].strip("/"), x["exists"].strip("/")
+            print(f"{src or torrent_name}")
+            if exists or not target:
+                print(f"  skip: {'already in the library at ' + exists if exists else x['why']}")
+            elif os.path.exists(os.path.join(music, target)):
+                print(f"  -> {target}  (this folder already exists)")
+                taken.append(target)
+            else:
+                print(f"  -> {target}  ({x['why']})")
+                plan[src] = target
+        messages.append({"role": "assistant", "content": r.content})
+        if taken:  # tell Claude without asking
+            feedback = "These folders already exist in my music folder, choose others: " + ", ".join(taken)
+        else:
+            feedback = ask("\nEnter: accept, q: quit, or tell Claude what to change: ")
+            if not feedback:
+                return plan
+            if feedback.lower() == "q":
+                return {}
+        messages.append({"role": "user", "content": feedback})
+
+
+class Node:
+    def __init__(self, name, parent=None, index=None):
+        self.name, self.parent, self.index = name, parent, index
+        self.children, self.open, self.marked, self.size = {}, False, False, 0
+        self.depth = parent.depth + 1 if parent else -1
+
+    def files(self):
+        return [self] if self.index is not None else [f for c in self.children.values() for f in c.files()]
+
+
+def pick(scr, title, files):
+    """Tree of the torrent's folders and files: arrows move and open folders, Space marks.
+    Returns the indices of the marked files, or None."""
+    root = Node("")
+    for i, path, n in files:
+        node = root
+        parts = path.split("/")
+        for j, part in enumerate(parts):
+            leaf = j == len(parts) - 1
+            node = node.children.setdefault(part, Node(part, node, i if leaf else None))
+            node.size += n
+    root.open = True
+    if len(root.children) == 1:  # the torrent's own folder
+        next(iter(root.children.values())).open = True
+
+    def visible(node):
+        for c in sorted(node.children.values(), key=lambda c: (c.index is not None, c.name.casefold())):
+            yield c
+            if c.open:
+                yield from visible(c)
+
+    curses.curs_set(0)
+    curses.use_default_colors()
+    cur = top = 0
+    while True:
+        rows = list(visible(root))
+        cur = max(0, min(cur, len(rows) - 1))
+        h, w = scr.getmaxyx()
+        page = h - 3
+        top = min(max(top, cur - page + 1), cur)
+        marked = [f for f in root.files() if f.marked]
+        scr.erase()
+        scr.addnstr(0, 0, f"{title}   marked: {len(marked)} files, {size(sum(f.size for f in marked))}", w - 1, curses.A_BOLD)
+        for y, node in enumerate(rows[top:top + page], 1):
+            fl = node.files()
+            box = "[x]" if all(f.marked for f in fl) else "[-]" if any(f.marked for f in fl) else "[ ]"
+            name = node.name if node.index is not None else ("▾ " if node.open else "▸ ") + node.name + "/"
+            line = f"{box} {'  ' * node.depth}{name}"
+            sz = size(node.size)
+            text = line[:max(0, w - len(sz) - 3)].ljust(w - len(sz) - 3) + " " + sz
+            scr.addnstr(y, 0, text, w - 1, curses.A_REVERSE if top + y - 1 == cur else 0)
+        scr.addnstr(h - 1, 0, "↑↓ move  → open  ← close  Space mark  a all  Enter download marked  q quit", w - 1, curses.A_DIM)
+        k = scr.get_wch()
+        node = rows[cur] if rows else None
+        if k in (curses.KEY_UP, "k"):
+            cur -= 1
+        elif k in (curses.KEY_DOWN, "j"):
+            cur += 1
+        elif k == curses.KEY_PPAGE:
+            cur -= page
+        elif k == curses.KEY_NPAGE:
+            cur += page
+        elif k in (curses.KEY_RIGHT, "l") and node.index is None:
+            node.open = True
+        elif k in (curses.KEY_LEFT, "h"):
+            if node.index is None and node.open:
+                node.open = False
+            elif node.parent is not root:
+                node.parent.open = False
+                cur = rows.index(node.parent)
+        elif k == " ":
+            fl = node.files()
+            on = not all(f.marked for f in fl)
+            for f in fl:
+                f.marked = on
+            cur += 1
+        elif k == "a":
+            fl = root.files()
+            on = not all(f.marked for f in fl)
+            for f in fl:
+                f.marked = on
+        elif k in ("\n", "\r", curses.KEY_ENTER):
+            return [f.index for f in marked]
+        elif k == "q":
+            return None
+
+
+def download(info, files, save_path, resume):
+    """Downloads the files and stops; their resume data lets cmus-b2-seed seed them without a check."""
+    ses = lt.session({"listen_interfaces": "0.0.0.0:6881,[::]:6881", "alert_mask": lt.alert_category.storage})
+    prio = [0] * info.num_files()
+    for i in files:
+        prio[i] = 4
+    params = lt.add_torrent_params()
+    params.ti, params.save_path, params.file_priorities = info, save_path, prio
+    h = ses.add_torrent(params)
+    while True:
+        s = h.status()
+        print(f"\r{s.progress * 100:5.1f}%  {s.download_rate / 2**20:5.1f} MB/s  peers {s.num_peers}   ",
+              end="", flush=True)
+        if s.is_finished:
+            break
+        time.sleep(1)
+    print()
+    h.save_resume_data()
+    while not (alerts := [x for x in ses.pop_alerts() if isinstance(x, lt.save_resume_data_alert)]):
+        ses.wait_for_alert(1000)
+    with open(resume, "wb") as f:
+        f.write(lt.write_resume_data_buf(alerts[0].params))
+    ses.remove_torrent(h)
+
+
+def has_audio(info):
+    fs = info.layout()
+    return any(os.path.splitext(fs.file_path(i))[1].lower() in AUDIO_EXT for i in range(fs.num_files()))
+
+
+def newest_music_torrent():
+    for path in sorted(glob.glob(os.path.expanduser("~/Downloads/*.torrent")), key=os.path.getmtime, reverse=True):
+        if has_audio(lt.torrent_info(path)):
+            return path
+    return None
+
+
+def main():
+    path = a.torrent or newest_music_torrent()
+    if not path:
+        sys.exit("No .torrent with music in ~/Downloads")
+    info = lt.torrent_info(path)
+    fs = info.layout()
+    print(f"Torrent: {os.path.basename(path)}")
+
+    picked = curses.wrapper(pick, info.name(), [(i, fs.file_path(i), fs.file_size(i)) for i in range(fs.num_files())
+                                                if not fs.file_flags(i) & lt.file_storage.flag_pad_file])
+    if not picked:
+        return
+    albums = {}  # album folder in the torrent -> indices of its picked files (all files below it)
+    for i in picked:
+        if os.path.splitext(fs.file_path(i))[1].lower() in AUDIO_EXT:
+            albums.setdefault(album_of(fs.file_path(i)), [])
+    for i in picked:  # a file belongs to the innermost album folder above it
+        f = fs.file_path(i)
+        src = max((s for s in albums if f.startswith(s + "/") or not s), key=len, default=None)
+        if src is None:
+            print(f"Not in an album folder, skipped: {f}")
+        else:
+            albums[src].append(i)
+    if not albums:
+        sys.exit("No audio files picked")
+    chosen = sorted(albums)
+
+    plan = plan_albums(info.name(), {src: [os.path.relpath(fs.file_path(i), src or ".") for i in albums[src]]
+                                     for src in chosen})
+    if not plan:
+        return
+
+    incoming = os.path.join(cache, "incoming", str(info.info_hashes().get_best()))
+    resume = incoming + ".resume"
+    download(info, [i for src in plan for i in albums[src]], incoming, resume)
+    for src, target in plan.items():
+        dst = os.path.join(music, target)
+        if src:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.move(os.path.join(incoming, src), dst)
+        else:  # single-file torrent
+            os.makedirs(dst)
+            shutil.move(os.path.join(incoming, fs.file_path(0)), dst)
+    shutil.rmtree(incoming)
+
+    print("Uploading to the bucket...")
+    subprocess.run([os.path.join(tools, "sync-music.sh"), "--", *plan.values()], check=True)
+    print("Publishing the catalog...")
+    subprocess.run([os.path.join(tools, "publish-catalog.sh")], check=True)
+    # the mount keeps its directory listings a year (see rclone-b2music.service)
+    for top in {t.split("/")[0] for t in plan.values()}:
+        subprocess.run(["rclone", "rc", "vfs/refresh", f"dir={top}", "recursive=true"], capture_output=True)
+    subprocess.run(["rclone", "rc", "vfs/refresh"], capture_output=True)
+    here = os.path.dirname(os.path.realpath(__file__))
+    if subprocess.run([os.path.join(here, "cmus-b2")]).returncode:  # the rest does not need it
+        print("cmus-b2 failed: the cmus library is not refreshed, run contrib/cmus-b2 later")
+
+    # seeding from the bucket (contrib/cmus-b2-seed), with the files at their library paths
+    seed_map = {}
+    for src, target in plan.items():
+        for i in albums[src]:
+            rel = fs.file_path(i)[len(src) + 1:] if src else os.path.basename(fs.file_path(i))
+            seed_map[str(i)] = os.path.join(target, rel)
+    with open(incoming + ".map", "w", encoding="utf-8") as f:
+        json.dump(seed_map, f, ensure_ascii=False)
+    subprocess.run([os.path.join(here, "cmus-b2-seed"), "add", path, incoming + ".map", resume], check=True)
+    os.remove(incoming + ".map")
+    os.remove(resume)
+
+    keep = option("added_local_copy") or "ask"
+    for target in plan.values():
+        local, remote = os.path.join(music, target), f"{a.remote}/music/{target}"
+        if subprocess.run(["rclone", "check", "--one-way", local, remote], capture_output=True).returncode:
+            print(f"{target}: not all files are in the bucket, keeping the local copy")
+        elif keep == "delete" or keep == "ask" and ask(f"Remove the local copy of {target}? [Y/n] ").lower() != "n":
+            shutil.rmtree(local)
+            try:  # the artist and genre folders, if they are empty now
+                os.removedirs(os.path.dirname(local))
+            except OSError:
+                pass
+    print("Done")
+    ask("Enter to close")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (Exception, SystemExit) as e:  # keep the window open to read what went wrong
+        if not (isinstance(e, SystemExit) and e.code in (None, 0)):
+            print(e if isinstance(e, SystemExit) else f"Error: {e!r}")
+            ask("Enter to close")
+        raise

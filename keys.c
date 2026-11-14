@@ -39,6 +39,7 @@ const char * const key_context_names[NR_CTXS + 1] = {
 	"playlist",
 	"queue",
 	"settings",
+	"torrents",
 	NULL
 };
 
@@ -53,6 +54,7 @@ static const enum key_context view_to_context[] = {
 	CTX_FILTERS,
 	CTX_SETTINGS,
 	CTX_COMMON,
+	CTX_TORRENTS,
 };
 
 #define KEY_IS_CHAR -255

@@ -47,6 +47,7 @@
 #include "debug.h"
 #include "help.h"
 #include "lyrics.h"
+#include "torrents.h"
 #include "worker.h"
 #include "input.h"
 #include "file.h"
@@ -1212,6 +1213,30 @@ static void update_lyrics_window(void)
 	update_window(lyrics_win, 0, 0, win_w, title, print_lyrics);
 }
 
+static void print_torrent(struct window *win, int row, struct iter *iter)
+{
+	struct iter sel;
+	int selected;
+	const struct torrent_line *l = iter_to_torrent_line(iter);
+
+	window_get_sel(win, &sel);
+	selected = iters_equal(iter, &sel);
+	bkgdset(pairs[(1 << 2) | (selected << 1) | selected]);
+	if (selected) {
+		cursor_x = 0;
+		cursor_y = 1 + row;
+	}
+	gbuf_add_ch(&print_buffer, ' ');
+	format_str(&print_buffer, l->text, win_w - 2);
+	gbuf_add_ch(&print_buffer, ' ');
+	dump_print_buffer(row + 1, 0);
+}
+
+static void update_torrents_window(void)
+{
+	update_window(torrents_win, 0, 0, win_w, "Torrents", print_torrent);
+}
+
 static void lyrics_follow_player(void)
 {
 	lyrics_load(player_info.ti ? player_info.ti->filename : NULL);
@@ -1262,6 +1287,9 @@ static void do_update_view(int full)
 		break;
 	case LYRICS_VIEW:
 		update_lyrics_window();
+		break;
+	case TORRENTS_VIEW:
+		update_torrents_window();
 		break;
 	}
 }
@@ -1665,6 +1693,9 @@ void search_not_found(void)
 		case LYRICS_VIEW:
 			what = "Line";
 			break;
+		case TORRENTS_VIEW:
+			what = "Torrent";
+			break;
 		}
 	} else {
 		switch (cur_view) {
@@ -1685,6 +1716,9 @@ void search_not_found(void)
 			break;
 		case LYRICS_VIEW:
 			what = "Line";
+			break;
+		case TORRENTS_VIEW:
+			what = "Torrent";
 			break;
 		}
 	}
@@ -1734,6 +1768,10 @@ void set_view(int view)
 	case LYRICS_VIEW:
 		searchable = lyrics_searchable;
 		lyrics_follow_player();
+		break;
+	case TORRENTS_VIEW:
+		searchable = torrents_searchable;
+		torrents_reload(1);
 		break;
 	}
 
@@ -1960,6 +1998,7 @@ static void update_window_size(void)
 		window_set_nr_rows(filters_win, h - 1);
 		window_set_nr_rows(help_win, h - 1);
 		window_set_nr_rows(lyrics_win, h - 1);
+		window_set_nr_rows(torrents_win, h - 1);
 		window_set_nr_rows(browser_win, h - 1);
 	}
 	clearok(curscr, TRUE);
@@ -2032,6 +2071,10 @@ static void update(void)
 		if (player_info.file_changed || player_info.position_changed)
 			lyrics_follow_player();
 		needs_view_update += lyrics_win->changed;
+		break;
+	case TORRENTS_VIEW:
+		torrents_reload(0);
+		needs_view_update += torrents_win->changed;
 		break;
 	}
 
@@ -2276,6 +2319,9 @@ static void main_loop(void)
 		if (player_info.status == PLAYER_STATUS_PLAYING) {
 			// player position updates need to be fast
 			tv.tv_usec = 100e3;
+		} else if (cur_view == TORRENTS_VIEW) {
+			/* the view refreshes its numbers */
+			tv.tv_usec = 500e3;
 		}
 
 		FD_ZERO(&set);
@@ -2484,6 +2530,7 @@ static void init_all(void)
 	filters_init();
 	help_init();
 	lyrics_init();
+	torrents_init();
 	cmdline_init();
 	commands_init();
 	search_mode_init();
@@ -2562,6 +2609,7 @@ static void exit_all(void)
 	filters_exit();
 	help_exit();
 	lyrics_exit();
+	torrents_exit();
 	browser_exit();
 	mpris_free();
 }

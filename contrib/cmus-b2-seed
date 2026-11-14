@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""Seed the torrents added by cmus-b2-add from the rclone mount of the bucket.
+
+  cmus-b2-seed run                    # the service, see contrib/cmus-b2-seed.service
+  cmus-b2-seed status                 # lines for the Torrents view of cmus (view 9)
+  cmus-b2-seed new                    # cmus-b2-add in a new window ($CMUS_B2_TERMINAL, footclient -N)
+  cmus-b2-seed toggle HASH            # seeding on or off
+  cmus-b2-seed remove HASH            # forget the torrent (the music stays)
+  cmus-b2-seed add FILE.torrent MAP.json [RESUME]   # MAP: {"file index": "path in the bucket's music/"}
+
+Nothing is downloaded: only the files of the torrent that are in the library are
+served from the mount (~/b2music), renamed to their library paths. A file whose
+tags or lyrics changed no longer matches the torrent, so its pieces fail the
+hash check and are simply not seeded: the library wins.
+
+Everything sent counts as read from the bucket (an upper bound, part comes
+from the mount's cache). SEED_LIMIT_GB in ~/.config/cmus-b2/env (default 100)
+caps a calendar month: cmus shows a warning at 80%, seeding pauses at 100%
+until the next month. B2 gives free downloads up to three times the stored
+size a month.
+"""
+import gzip
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+import libtorrent as lt
+
+DATA = os.path.expanduser("~/.local/share/cmus-b2/seed")
+TORRENTS = os.path.join(DATA, "torrents.json")  # written by the commands, read by the service
+STATS = os.path.join(DATA, "stats.json")  # written by the service
+MOUNT = os.path.expanduser("~/b2music")
+CATALOG = os.path.expanduser("~/.cache/cmus-b2/catalog.json.gz")
+PORT = 6891
+GB = 2**30
+
+
+def load(path, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return default
+
+
+def save(path, data):
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    os.replace(path + ".tmp", path)
+
+
+def limit_bytes():
+    env = os.path.expanduser("~/.config/cmus-b2/env")
+    if os.path.exists(env):
+        for line in open(env, encoding="utf-8"):
+            k, _, v = line.strip().partition("=")
+            if k == "SEED_LIMIT_GB":
+                return float(v) * GB
+    return 100 * GB
+
+
+def size(n):
+    return f"{n / GB:.1f} GB" if n >= GB / 10 else f"{n / 2**20:.0f} MB"
+
+
+def catalog_mtimes():
+    try:
+        with gzip.open(CATALOG, "rt", encoding="utf-8") as f:
+            return {t["path"]: t.get("mtime") for al in json.load(f)["albums"] for t in al["tracks"]}
+    except FileNotFoundError:
+        return {}
+
+
+def cmus_echo(msg):
+    subprocess.run(["cmus-remote", "-C", f"echo {msg}"], capture_output=True)
+
+
+# commands
+
+def add(torrent, map_file, resume=None):
+    info = lt.torrent_info(torrent)
+    h = str(info.info_hashes().get_best())
+    os.makedirs(DATA, exist_ok=True)
+    shutil.copy(torrent, os.path.join(DATA, h + ".torrent"))
+    files = load(map_file, {})
+    mtimes = catalog_mtimes()
+    torrents = load(TORRENTS, {})
+    old = torrents.get(h, {})
+    if resume and not old:  # for more files of a torrent the service checks them all
+        shutil.copy(resume, os.path.join(DATA, h + ".resume"))
+    files = {**old.get("files", {}), **files}
+    torrents[h] = {"name": info.name(), "files": files, "enabled": old.get("enabled", True),
+                   "mtimes": {i: mtimes.get(p) for i, p in files.items()}, "added": old.get("added", int(time.time()))}
+    save(TORRENTS, torrents)
+
+
+def new(_=""):
+    """Opens cmus-b2-add in a new terminal window."""
+    term = os.environ.get("CMUS_B2_TERMINAL", "footclient -N").split()
+    subprocess.Popen([*term, os.path.join(os.path.dirname(os.path.realpath(__file__)), "cmus-b2-add")],
+                     start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def toggle(h=""):
+    torrents = load(TORRENTS, {})
+    if h in torrents:
+        torrents[h]["enabled"] = not torrents[h]["enabled"]
+        save(TORRENTS, torrents)
+
+
+def remove(h=""):
+    torrents = load(TORRENTS, {})
+    if h not in torrents:
+        return
+    del torrents[h]
+    save(TORRENTS, torrents)
+    for ext in (".torrent", ".resume"):
+        try:
+            os.remove(os.path.join(DATA, h + ext))
+        except FileNotFoundError:
+            pass
+
+
+def status(_=""):
+    torrents, stats = load(TORRENTS, {}), load(STATS, {})
+    live = stats.get("torrents", {})
+    running = time.time() - stats.get("time", 0) < 30
+    month, limit = stats.get("month_sent", 0), stats.get("limit", limit_bytes())
+    head = f"Sent this month: {size(month)} of {size(limit)} (read from the bucket at most)"
+    if stats.get("paused_by_limit"):
+        head += "  PAUSED: monthly limit reached"
+    elif month >= 0.8 * limit:
+        head += "  WARNING: near the monthly limit"
+    if not running:
+        head += "  (service not running: systemctl --user start cmus-b2-seed)"
+    print(f"\t{head}")
+    for h, t in sorted(torrents.items(), key=lambda x: x[1]["name"].casefold()):
+        s = live.get(h, {}) if running else {}
+        state = s.get("state", "stopped") if t["enabled"] else "off"
+        line = (f"[{'x' if t['enabled'] else ' '}] {t['name']}  ·  {state}  ·  {len(t['files'])} files"
+                f"  ·  ↑ {s.get('rate', 0) / 1024:.0f} KB/s  ·  peers {s.get('peers', 0)}"
+                f"  ·  month {size(s.get('sent_month', 0))}  ·  total {size(s.get('sent_total', 0))}")
+        print(f"{h}\t{line}")
+    if not torrents:
+        print("\tNo torrents yet: a adds one")
+
+
+# service
+
+def run():
+    os.makedirs(DATA, exist_ok=True)
+    ses = lt.session({"listen_interfaces": f"0.0.0.0:{PORT},[::]:{PORT}",
+                      "alert_mask": lt.alert_category.status | lt.alert_category.storage | lt.alert_category.error})
+    stats = load(STATS, {})
+    stats.setdefault("torrents", {})
+    handles, started, last_sent, cfg_mtime, last_check = {}, {}, {}, None, 0
+
+    def wanted_paused(t):
+        return not t["enabled"] or stats.get("paused_by_limit")
+
+    def start(h, t):
+        resume = os.path.join(DATA, h + ".resume")
+        if os.path.exists(resume):
+            with open(resume, "rb") as f:
+                params = lt.read_resume_data(f.read())
+        else:
+            params = lt.add_torrent_params()
+        params.ti = lt.torrent_info(os.path.join(DATA, h + ".torrent"))
+        params.save_path = MOUNT
+        params.renamed_files = {int(i): p for i, p in t["files"].items()}
+        params.file_priorities = [4 if str(i) in t["files"] else 0 for i in range(params.ti.num_files())]
+        # never write to the read-only mount; paused torrents stay paused
+        params.flags = (params.flags | lt.torrent_flags.upload_mode) & ~lt.torrent_flags.auto_managed
+        if wanted_paused(t):
+            params.flags |= lt.torrent_flags.paused
+        else:
+            params.flags &= ~lt.torrent_flags.paused
+        handles[h] = ses.add_torrent(params)
+        started[h] = t["files"]
+        last_sent[h] = 0
+
+    while True:
+        month = time.strftime("%Y-%m")
+        if stats.get("month") != month:  # a new month: counters and the limit start over
+            stats.update(month=month, month_sent=0, paused_by_limit=False, warned=False)
+            for s in stats["torrents"].values():
+                s["sent_month"] = 0
+            cfg_mtime = None
+        stats["limit"] = limit_bytes()
+
+        try:
+            m = os.path.getmtime(TORRENTS)
+        except FileNotFoundError:
+            m = 0
+        if m != cfg_mtime:
+            cfg_mtime, torrents = m, load(TORRENTS, {})
+            for h in set(handles) - set(torrents):
+                ses.remove_torrent(handles.pop(h))
+            for h, t in torrents.items():
+                if h not in handles:
+                    start(h, t)
+                elif started[h] != t["files"]:  # more files of the torrent were added
+                    n = handles[h].torrent_file().num_files()
+                    for i, path in t["files"].items():
+                        handles[h].rename_file(int(i), path)
+                    handles[h].prioritize_files([4 if str(i) in t["files"] else 0 for i in range(n)])
+                    handles[h].force_recheck()
+                    started[h] = t["files"]
+                elif wanted_paused(t):
+                    handles[h].pause()
+                else:
+                    handles[h].resume()
+
+        # files changed in the bucket since they were added: check them again
+        if time.time() - last_check > 3600:
+            last_check = time.time()
+            mtimes = catalog_mtimes()
+            torrents = load(TORRENTS, {})
+            for h, t in torrents.items():
+                now = {i: mtimes.get(p) for i, p in t["files"].items()}
+                if mtimes and now != t.get("mtimes") and h in handles:
+                    for top in {p.split("/")[0] for p in t["files"].values()}:
+                        subprocess.run(["rclone", "rc", "vfs/refresh", f"dir={top}", "recursive=true"],
+                                       capture_output=True)
+                    handles[h].force_recheck()
+                    t["mtimes"] = now
+                    save(TORRENTS, torrents)
+                    cfg_mtime = os.path.getmtime(TORRENTS)
+
+        for a in ses.pop_alerts():
+            if isinstance(a, lt.save_resume_data_alert):
+                h = str(a.handle.info_hashes().get_best())
+                with open(os.path.join(DATA, h + ".resume"), "wb") as f:
+                    f.write(lt.write_resume_data_buf(a.params))
+            elif isinstance(a, lt.torrent_checked_alert):
+                a.handle.save_resume_data()
+
+        for h, handle in handles.items():
+            st = handle.status()
+            delta = st.total_payload_upload - last_sent[h]
+            last_sent[h] = st.total_payload_upload
+            s = stats["torrents"].setdefault(h, {"sent_total": 0, "sent_month": 0})
+            s["sent_total"] += delta
+            s["sent_month"] += delta
+            stats["month_sent"] += delta
+            state = "paused" if st.flags & lt.torrent_flags.paused else \
+                "checking" if st.state in (lt.torrent_status.checking_files, lt.torrent_status.checking_resume_data) else \
+                f"seeding, has {st.num_pieces * 100 // max(1, handle.torrent_file().num_pieces())}%"
+            if st.errc.value():
+                state = f"error: {st.errc.message()}"
+            s.update(rate=st.upload_payload_rate, peers=st.num_peers, state=state)
+        for h in set(stats["torrents"]) - set(handles):
+            del stats["torrents"][h]
+
+        if stats["month_sent"] >= stats["limit"] and not stats["paused_by_limit"]:
+            stats["paused_by_limit"] = True
+            for handle in handles.values():
+                handle.pause()
+            cmus_echo(f"Seeding paused: {size(stats['month_sent'])} sent this month, the limit is {size(stats['limit'])}")
+        elif stats["month_sent"] >= 0.8 * stats["limit"] and not stats.get("warned"):
+            stats["warned"] = True
+            cmus_echo(f"Seeding: {size(stats['month_sent'])} sent this month of {size(stats['limit'])}")
+        stats["time"] = int(time.time())
+        save(STATS, stats)
+        time.sleep(5)
+
+
+if __name__ == "__main__":
+    cmds = {"run": run, "status": status, "new": new, "toggle": toggle, "remove": remove, "add": add}
+    if len(sys.argv) < 2 or sys.argv[1] not in cmds:
+        sys.exit(__doc__)
+    cmds[sys.argv[1]](*sys.argv[2:])

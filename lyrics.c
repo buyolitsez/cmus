@@ -21,11 +21,10 @@
 #include "misc.h"
 #include "utils.h"
 #include "debug.h"
+#include "spawn.h"
 
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/wait.h>
 
 struct window *lyrics_win;
 struct searchable *lyrics_searchable;
@@ -139,43 +138,8 @@ void lyrics_parse(const char *buf)
 static char *run_program(const char *filename)
 {
 	char *argv[] = { lyrics_program, (char *)filename, NULL };
-	char *out = NULL;
-	size_t size = 0, alloc = 0;
-	int fds[2];
-	pid_t pid;
 
-	if (pipe(fds))
-		return NULL;
-	pid = fork();
-	if (pid == -1) {
-		close(fds[0]);
-		close(fds[1]);
-		return NULL;
-	}
-	if (pid == 0) {
-		dup2(fds[1], 1);
-		close(fds[0]);
-		close(fds[1]);
-		execvp(argv[0], argv);
-		_exit(127);
-	}
-	close(fds[1]);
-	while (1) {
-		ssize_t rc;
-
-		if (alloc - size < 4096) {
-			alloc = alloc * 2 + 4096;
-			out = xrealloc(out, alloc);
-		}
-		rc = read(fds[0], out + size, alloc - size - 1);
-		if (rc <= 0)
-			break;
-		size += rc;
-	}
-	close(fds[0]);
-	waitpid(pid, NULL, 0);
-	out[size] = 0;
-	return out;
+	return spawn_output(argv);
 }
 
 void lyrics_load(const char *filename)
