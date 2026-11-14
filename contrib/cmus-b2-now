@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Continue listening between cmus and b2-player, through state/now-playing.json.
+
+Whoever plays writes the track and position there. Hook it into cmus by adding
+    cmus-b2-now "$@" &
+to the status_display_program script: on play, pause and track change of a
+bucket track it writes the file. When cmus starts or stops and the phone played
+later, the command line says so.
+
+"cmus-b2-now --resume" plays the track the file names, from where it stopped:
+":bind common R shell cmus-b2-now --resume".
+"""
+import gzip
+import json
+import os
+import subprocess
+import sys
+import time
+
+REMOTE = "b2music:buyolitsez-music/state/now-playing.json"
+OUT = os.path.expanduser("~/.cache/cmus-b2")
+STATE = os.path.join(OUT, "now-playing-status")
+
+
+def cmus(*cmd):
+    return subprocess.run(["cmus-remote", *cmd], capture_output=True, text=True).stdout
+
+
+def query():
+    """cmus-remote -Q as a dict: status, file, position, and the options as "set <name>"."""
+    q = {}
+    for line in cmus("-Q").splitlines():
+        if line.startswith("set "):
+            k, _, v = line[4:].partition(" ")
+            k = "set " + k
+        else:
+            k, _, v = line.partition(" ")
+        q[k] = v
+    return q
+
+
+def catalog_tracks():
+    """(id, cmus key, track) for every catalog track; the key is the bucket path,
+    or (album dir, track number) for a CUE track, as contrib/cmus-b2 adds them."""
+    with gzip.open(os.path.join(OUT, "catalog.json.gz"), "rt", encoding="utf-8") as f:
+        catalog = json.load(f)
+    for al in catalog["albums"]:
+        for t in al["tracks"]:
+            path = t["path"]
+            if "start" in t:
+                yield f"{path}#{float(t['start'])}", (os.path.dirname(path), t.get("track")), t
+            else:
+                yield path, path, t
+
+
+def key_of(filename, roots):
+    """The catalog key of a file under bucket_dir or download_dir, else None."""
+    cue = filename.startswith("cue://")
+    if cue:
+        filename, n = filename[len("cue://"):].rsplit("/", 1)
+    for root in roots:
+        if root and filename.startswith(root.rstrip("/") + "/"):
+            rel = os.path.relpath(filename, root)
+            return (os.path.dirname(rel), int(n)) if cue else rel
+    return None
+
+
+def fmt(sec):
+    sec = int(sec)
+    return f"{sec // 60}:{sec % 60:02d}"
+
+
+def fetch():
+    r = subprocess.run(["rclone", "cat", REMOTE], capture_output=True)
+    return json.loads(r.stdout) if r.returncode == 0 and r.stdout else None
+
+
+def position_now(h):
+    """A track still playing on the phone has moved on since the file was written."""
+    ms = h["position_ms"] + (max(0, time.time() * 1000 - h["time"]) if h.get("playing") else 0)
+    return ms / 1000
+
+
+def write(tid, position, playing):
+    data = {"version": 1, "track": tid, "position_ms": int(position * 1000), "playing": playing,
+            "time": int(time.time() * 1000), "device": "arch"}
+    subprocess.run(["rclone", "rcat", REMOTE], input=json.dumps(data, indent=1, ensure_ascii=False).encode(), check=True)
+    # the bucket keeps every version: only the newest one is worth keeping
+    d, name = REMOTE.rsplit("/", 1)
+    stem, ext = os.path.splitext(name)
+    old = subprocess.run(["rclone", "lsf", "--b2-versions", "--files-only", "--include", f"{stem}-v*{ext}", d],
+                         capture_output=True, text=True).stdout.split()
+    for v in old:
+        subprocess.run(["rclone", "deletefile", "--b2-versions", f"{d}/{v}"], capture_output=True)
+
+
+def hook(args):
+    """status_display_program: write on play, on pause or stop after playing, else tell about the phone."""
+    status = args[args.index("status") + 1] if "status" in args else ""
+    pid = subprocess.run(["pidof", "-s", "cmus"], capture_output=True, text=True).stdout.strip()
+    try:
+        with open(STATE) as f:
+            prev_pid, prev_status = f.read().split()
+    except (FileNotFoundError, ValueError):
+        prev_pid = prev_status = ""
+    os.makedirs(OUT, exist_ok=True)
+    with open(STATE, "w") as f:
+        f.write(f"{pid} {status}\n")
+    q = query()
+    if status == "playing" or (prev_pid == pid and prev_status == "playing"):
+        key = key_of(q.get("file", ""), (q.get("set bucket_dir"), q.get("set download_dir")))
+        tid = next((tid for tid, k, _ in catalog_tracks() if k == key), None) if key else None
+        if tid:
+            write(tid, float(q.get("position", 0)), status == "playing")
+    elif status in ("paused", "stopped"):
+        h = fetch()
+        if h and h.get("device") == "phone":
+            t = next((t for tid, _, t in catalog_tracks() if tid == h["track"]), None)
+            if t:
+                cmus("-C", f"echo Phone: {t['title']} · {fmt(position_now(h))}, press R to continue")
+
+
+def resume():
+    h = fetch()
+    if not h:
+        cmus("-C", "echo Nothing to continue")
+        return 1
+    q = query()
+    bucket, download = q.get("set bucket_dir", ""), q.get("set download_dir", "")
+    hit = next(((k, t) for tid, k, t in catalog_tracks() if tid == h["track"]), None)
+    if not hit:
+        cmus("-C", f"echo Not in the catalog: {h['track']}")
+        return 1
+    key, t = hit
+    if isinstance(key, tuple):
+        d = os.path.join(bucket, key[0])
+        cues = sorted(n for n in os.listdir(d) if n.lower().endswith(".cue"))
+        filename = f"cue://{os.path.join(d, cues[0])}/{key[1]}"
+    else:
+        local = os.path.join(download, key) if download else ""
+        filename = local if local and os.path.exists(local) else os.path.join(bucket, key)
+    position = min(position_now(h), t["duration"] - 1)
+    cmus("-C", f"player-play {filename}")
+    # over the rclone mount the file takes a moment to open, and a seek before that is lost
+    for _ in range(100):
+        q = query()
+        if q.get("status") == "playing" and q.get("file") == filename:
+            break
+        time.sleep(0.1)
+    cmus("-C", f"seek {int(position)}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(resume() if sys.argv[1:2] == ["--resume"] else hook(sys.argv[1:]))
+    except Exception as e:
+        cmus("-C", f"echo cmus-b2-now failed: {e}")
+        sys.exit(1)

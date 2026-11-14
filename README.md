@@ -124,6 +124,11 @@ Downloading: with `set bucket_dir=~/b2music` and `set download_dir=~/Music`, a b
 path under `download_dir` plays from the copy. `:bind common d run <repo>/contrib/cmus-b2-download` copies the selected
 tracks or albums there (in the background, keeping mtimes, so `sync-music.sh` has nothing to upload).
 
+Continuing what was played on the phone: add `cmus-b2-now "$@" &` to the `status_display_program` script, so cmus
+writes the track and position to `state/now-playing.json` on play, pause and track change, as the app does, and the app
+offers to continue it. When cmus starts or stops after the phone played, the command line says what it was;
+`:bind common R shell <repo>/contrib/cmus-b2-now --resume` plays it from where the phone stopped.
+
 Filters: `H` shows only liked tracks, `A` all tracks again (`:filter lastfm_loved`, `:filter downloaded`, `:filter`).
 
 Adding albums from a torrent: `:bind common T shell footclient -N <repo>/contrib/cmus-b2-add` (or `a` in the torrents
