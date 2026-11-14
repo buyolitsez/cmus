@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Like or unlike the bucket tracks selected in cmus, in state/likes.json.
+
+Bind it in cmus with ":bind common K run cmus-b2-like". If all the selected
+tracks are liked they are unliked, otherwise liked. The change goes on top of
+the bucket copy, so likes from the phone are kept, and cmus-b2 --likes then
+reloads the likes in cmus. Runs in the background and reports in the cmus
+command line when done.
+"""
+import gzip
+import json
+import os
+import subprocess
+import sys
+
+REMOTE = "b2music:buyolitsez-music/state/likes.json"
+OUT = os.path.expanduser("~/.cache/cmus-b2")
+
+
+def cmus(*cmd):
+    return subprocess.run(["cmus-remote", *cmd], capture_output=True, text=True).stdout
+
+
+def option(name):
+    for line in cmus("-Q").splitlines():
+        if line.startswith(f"set {name} "):
+            return line[len(f"set {name} "):]
+    return ""
+
+
+def main():
+    bucket = option("bucket_dir")
+    with gzip.open(os.path.join(OUT, "catalog.json.gz"), "rt", encoding="utf-8") as f:
+        catalog = json.load(f)
+    # cmus filename -> (id, liked in the catalog, title), as contrib/cmus-b2 names the tracks
+    tracks = {}
+    for al in catalog["albums"]:
+        for t in al["tracks"]:
+            path = t["path"]
+            if "start" in t:
+                tid = f"{path}#{float(t['start'])}"
+                key = (os.path.dirname(path), t.get("track"))
+            else:
+                tid = key = path
+            tracks[key] = (tid, bool(t.get("liked")), t["title"])
+
+    selected = []
+    for f in dict.fromkeys(sys.argv[1:]):
+        if f.startswith("cue://"):
+            cue, n = f[len("cue://"):].rsplit("/", 1)
+            key = (os.path.relpath(os.path.dirname(cue), bucket), int(n))
+        else:
+            key = os.path.relpath(f, bucket)
+        if key in tracks:
+            selected.append(tracks[key])
+    if not selected:
+        cmus("-C", "echo No bucket tracks selected")
+        return 1
+
+    likes = json.loads(subprocess.run(["rclone", "cat", REMOTE], capture_output=True, check=True).stdout or "{}")
+    added, removed = set(likes.get("added", [])), set(likes.get("removed", []))
+    like = not all((flag or tid in added) and tid not in removed for tid, flag, _ in selected)
+    for tid, flag, _ in selected:
+        if like:
+            removed.discard(tid)
+            if not flag:
+                added.add(tid)
+        else:
+            added.discard(tid)
+            if flag:
+                removed.add(tid)
+    data = json.dumps({"version": 1, "added": sorted(added), "removed": sorted(removed)}, indent=1, ensure_ascii=False)
+    subprocess.run(["rclone", "rcat", REMOTE], input=data.encode(), check=True)
+    subprocess.run([os.path.join(os.path.dirname(os.path.realpath(__file__)), "cmus-b2"), "--likes"], check=True)
+    what = selected[0][2] if len(selected) == 1 else f"{len(selected)} tracks"
+    cmus("-C", f"echo {'Liked' if like else 'Unliked'}: {what}")
+    return 0
+
+
+if __name__ == "__main__":
+    # cmus waits for the command, so the upload goes on in the background
+    if os.fork():
+        sys.exit(0)
+    os.setsid()
+    try:
+        sys.exit(main())
+    except Exception as e:
+        cmus("-C", f"echo cmus-b2-like failed: {e}")
+        sys.exit(1)

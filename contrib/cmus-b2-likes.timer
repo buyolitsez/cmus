@@ -1,0 +1,13 @@
+# Brings likes made on the phone to cmus within a minute.
+# Install: cp cmus-b2-likes.service cmus-b2-likes.timer ~/.config/systemd/user/ &&
+#          edit ExecStart to this repo's path && systemctl --user enable --now cmus-b2-likes.timer
+[Unit]
+Description=Fetch the likes of the music bucket for cmus every minute
+
+[Timer]
+OnActiveSec=0
+OnUnitActiveSec=1min
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

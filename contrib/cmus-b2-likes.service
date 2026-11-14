@@ -1,0 +1,7 @@
+# Reloads the likes of the b2-player bucket in cmus (see contrib/cmus-b2-likes.timer).
+[Unit]
+Description=Fetch the likes of the music bucket for cmus
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/cmus-b2/contrib/cmus-b2 --likes
