@@ -8,11 +8,12 @@ tags, so cmus adds the tracks without reading the files over the network.
 Writes to ~/.cache/cmus-b2:
   library.m3u  tagged playlist for ":add" (filename, duration, mtime, tags)
   likes        liked tracks for the lastfm_loved_file option
+  ratings      album ratings from state/ratings.json for the album_ratings_file option
   lyrics/      lyrics from the bucket for contrib/cmus-b2-lyrics
-If cmus is running, adds the library and reloads the likes.
+If cmus is running, adds the library and reloads the likes and ratings.
 
-With --likes only state/likes.json is fetched and the likes reloaded when they
-changed; contrib/cmus-b2-likes.timer runs that every minute.
+With --likes only state/likes.json and state/ratings.json are fetched and
+reloaded when they changed; contrib/cmus-b2-likes.timer runs that every minute.
 """
 import argparse
 import gzip
@@ -25,7 +26,7 @@ p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDes
 p.add_argument("--remote", default="b2music:buyolitsez-music", help="rclone path of the bucket")
 p.add_argument("--mount", default="~/b2music", help="where music/ of the bucket is mounted")
 p.add_argument("--out", default="~/.cache/cmus-b2")
-p.add_argument("--likes", action="store_true", help="only fetch and reload the likes")
+p.add_argument("--likes", action="store_true", help="only fetch and reload the likes and ratings")
 a = p.parse_args()
 mount = os.path.expanduser(a.mount)
 out = os.path.expanduser(a.out)
@@ -36,12 +37,19 @@ os.makedirs(out, exist_ok=True)
 # rclone copies a file only when it changed
 for name in ("state/likes.json",) if a.likes else ("catalog.json.gz", "state/likes.json"):
     subprocess.run(["rclone", "copyto", f"{a.remote}/{name}", os.path.join(out, os.path.basename(name))], check=True)
+# there are no ratings until tools/sync-ratings.py of b2-player first runs
+subprocess.run(["rclone", "copyto", f"{a.remote}/state/ratings.json", os.path.join(out, "ratings.json")], capture_output=True)
 
 with gzip.open(os.path.join(out, "catalog.json.gz"), "rt", encoding="utf-8") as f:
     catalog = json.load(f)
 with open(os.path.join(out, "likes.json"), encoding="utf-8") as f:
     likes = json.load(f)
 added, removed = set(likes.get("added", [])), set(likes.get("removed", []))
+try:
+    with open(os.path.join(out, "ratings.json"), encoding="utf-8") as f:
+        ratings = json.load(f)["albums"]
+except FileNotFoundError:
+    ratings = {}
 
 
 def clean(s):
@@ -84,21 +92,33 @@ for al in catalog["albums"]:
                 fields += [k, clean(v)]
         lines.append("\t".join(fields))
 
+def write(path, data):
+    """Writes the file if it changed; returns whether it did."""
+    try:
+        with open(path, "rb") as f:
+            if f.read() == data:
+                return False
+    except FileNotFoundError:
+        pass
+    with open(path + ".tmp", "wb") as f:
+        f.write(data)
+    os.replace(path + ".tmp", path)
+    return True
+
+
 likes_file = os.path.join(out, "likes")
-likes = b"".join(f"{clean(artist)}\0{clean(title)}\0".encode() for artist, title in loved.values())
-try:
-    with open(likes_file, "rb") as f:
-        likes_changed = f.read() != likes
-except FileNotFoundError:
-    likes_changed = True
-if likes_changed:
-    with open(likes_file + ".tmp", "wb") as f:
-        f.write(likes)
-    os.replace(likes_file + ".tmp", likes_file)
+likes_changed = write(likes_file, b"".join(f"{clean(artist)}\0{clean(title)}\0".encode() for artist, title in loved.values()))
+# album artist, album and rating (7.5 shows as 8), named as in the library tags below
+ratings_file = os.path.join(out, "ratings")
+ratings_changed = write(ratings_file, b"".join(
+    f"{clean(al['artist'])}\0{clean(al['title'])}\0{int(ratings[al['id']]['rating'] + 0.5)}\0".encode()
+    for al in catalog["albums"] if al["id"] in ratings))
 cmus_running = subprocess.run(["cmus-remote", "-Q"], capture_output=True).returncode == 0
 if a.likes:
     if likes_changed and cmus_running:
         subprocess.run(["cmus-remote", "-C", f"set lastfm_loved_file={likes_file}"], check=True)
+    if ratings_changed and cmus_running:
+        subprocess.run(["cmus-remote", "-C", f"set album_ratings_file={ratings_file}"], check=True)
     sys.exit()
 
 # lyrics from tags, as contrib/cmus-b2-lyrics reads them
@@ -125,3 +145,4 @@ print(f"{len(lines)} tracks, {len(loved)} liked")
 if cmus_running:
     subprocess.run(["cmus-remote", "-l", library], check=True)
     subprocess.run(["cmus-remote", "-C", f"set lastfm_loved_file={likes_file}"], check=True)
+    subprocess.run(["cmus-remote", "-C", f"set album_ratings_file={ratings_file}"], check=True)

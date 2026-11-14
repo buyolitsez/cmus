@@ -36,6 +36,7 @@
 #include "output.h"
 #include "input.h"
 #include "lastfm_loved.h"
+#include "album_ratings.h"
 #include "lyrics.h"
 #include "torrents.h"
 #include "download.h"
@@ -63,6 +64,7 @@
 char *output_plugin = NULL;
 char *status_display_program = NULL;
 static char *lastfm_loved_file = NULL;
+static char *album_ratings_file = NULL;
 char *server_password;
 int auto_reshuffle = 1;
 int confirm_run = 1;
@@ -1652,6 +1654,31 @@ static void set_lastfm_loved_file(void *data, const char *buf)
 	update_full();
 }
 
+static void get_album_ratings_file(void *data, char *buf, size_t size)
+{
+	strscpy(buf, album_ratings_file, size);
+}
+
+static void set_album_ratings_file(void *data, const char *buf)
+{
+	char *filename = NULL;
+
+	if (buf[0]) {
+		filename = expand_filename(buf);
+		if (album_ratings_load(filename)) {
+			error_msg("loading %s: %s", filename, strerror(errno));
+			free(filename);
+			return;
+		}
+	} else {
+		album_ratings_clear();
+	}
+
+	free(album_ratings_file);
+	album_ratings_file = filename;
+	update_full();
+}
+
 /* }}} */
 
 #define DN(name) { #name, get_ ## name, set_ ## name, NULL, 0 },
@@ -1680,6 +1707,7 @@ static const struct {
 	DT(sort_albums_by_name)
 	DN(id3_default_charset)
 	{ "lastfm_loved_file", get_lastfm_loved_file, set_lastfm_loved_file, NULL, 0 },
+	{ "album_ratings_file", get_album_ratings_file, set_album_ratings_file, NULL, 0 },
 	DN_FLAGS(lyrics_program, OPT_PROGRAM_PATH)
 	DN_FLAGS(torrents_program, OPT_PROGRAM_PATH)
 	DN(lib_sort)

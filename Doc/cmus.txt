@@ -1127,6 +1127,13 @@ lastfm_loved_file () [file]
 	if the new file is invalid or unreadable, cmus keeps the previously loaded
 	cache.
 
+album_ratings_file () [file]
+	Path to a NUL-delimited file of album ratings. Each record is an album
+	artist, an album and a rating. The *rating* format key and filter keyword
+	give the rating of a track's album (case-insensitive album artist/album
+	match), or nothing when it has none. Setting this option reloads the file;
+	if the new file is invalid or unreadable, cmus keeps the previous ratings.
+
 lyrics_program () [command]
 	Program that gets the track's filename and prints its lyrics, plain text
 	or LRC, for the lyrics view. See contrib/cmus-b2-lyrics.
@@ -1416,6 +1423,7 @@ Special Keys:
 	%F  %{filename}		@br
 	    %{lastfm_loved}	@br
 	    %{downloaded}	@br
+	    %{rating}		@br
 	    %{albumduration}    @br
 	    %{originaldate}	@br
 	    %{maxdate}		@br
@@ -1467,6 +1475,7 @@ Its keys are:
 	keyword *stream* [boolean] (always false, internet radio was removed) @br
 	keyword *lastfm_loved* [boolean] (returns true if the track is in *lastfm_loved_file*) @br
 	keyword *downloaded* [boolean] (returns true if the track has a local copy in *download_dir*) @br
+	keyword *rating* [integer] (rating of the track's album from *album_ratings_file*, -1 if none) @br
 	keyword *va* [boolean] (returns true if track's album is compilation)
 Else part can be skipped. A and B can contain string literals in *"* or *'*.
 A and B can be empty.

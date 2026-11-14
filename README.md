@@ -117,7 +117,8 @@ Lyrics (view 8, synced LRC lines are highlighted): `:set lyrics_program=<repo>/c
 existing autosave, `:bind common 8 view lyrics`. Bucket tracks use the lyrics `cmus-b2` saved from `lyrics/`, local
 files a `.lrc` next to them or the lyrics tag (needs `python-mutagen`).
 
-Light theme like the app: `:colorscheme b2` (colors and row formats with ♥ for likes and ↓ for downloaded tracks).
+Light theme like the app: `:colorscheme b2` (colors and row formats with ♥ for likes, ↓ for downloaded tracks and ★ for
+album ratings).
 
 Downloading: with `set bucket_dir=~/b2music` and `set download_dir=~/Music`, a bucket track that has a copy at the same
 path under `download_dir` plays from the copy. `:bind common d run <repo>/contrib/cmus-b2-download` copies the selected
@@ -140,10 +141,15 @@ and, with an existing autosave, `:bind common 9 view torrents`, `:bind torrents 
 this month and in total. What is sent is read from the bucket, so a month is capped by `SEED_LIMIT_GB` in
 `~/.config/cmus-b2/env` (default 100): a warning in cmus at 80%, seeding pauses at 100% until the next month.
 
-In `~/.config/cmus/rc`: `set lastfm_loved_file=~/.cache/cmus-b2/likes` (likes from the catalog and `state/likes.json`).
+In `~/.config/cmus/rc`: `set lastfm_loved_file=~/.cache/cmus-b2/likes` (likes from the catalog and `state/likes.json`)
+and `set album_ratings_file=~/.cache/cmus-b2/ratings` (album ratings from `state/ratings.json`).
 Run `contrib/cmus-b2` again after the catalog changes; `:update-cache` drops tracks deleted from the bucket.
 
 Likes sync both ways with the phone through `state/likes.json`. `:bind common K run cmus-b2-like` likes the selected
 tracks (or unlikes them if all are liked; `cmus-b2-like --like` only likes them); the change goes on top of the bucket
 copy, so likes from the phone are kept.
 `contrib/cmus-b2-likes.timer` brings likes from the phone within a minute (`cmus-b2 --likes`, install as written in it).
+
+Album ratings 1-10 come from the listening diary through `state/ratings.json` (see b2-player's `tools/sync-ratings.py`)
+and show as ★ in the `b2` theme. `:run cmus-b2-rate 8` rates the albums of the selected tracks (it goes to the diary
+through the same file); `:filter rating>=8` shows albums rated 8 and up, `:filter rating=-1` the unrated ones.
