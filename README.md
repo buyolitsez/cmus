@@ -136,12 +136,15 @@ likes and playlists after `y`. Install it from b2-player as its README says (JDK
 
 Filters: `H` shows only liked tracks, `A` all tracks again (`:filter lastfm_loved`, `:filter downloaded`, `:filter`).
 
-Adding albums from a torrent: `:bind common T shell footclient -N <repo>/contrib/cmus-b2-add` (or `a` in the torrents
-view) opens a window with the files of the newest `.torrent` with music in `~/Downloads` as a tree (Space marks folders
-or files). Claude suggests where each album goes in `~/Music` and changes the plan by what you write ("this is art pop", a path) until you accept it, then the marked files
+Adding albums from a torrent or YouTube Music: `:bind common T shell footclient -N <repo>/contrib/cmus-b2-add` (or `a`
+in the torrents view) opens a window where Enter takes the newest `.torrent` with music in `~/Downloads`, or you type a
+YouTube Music search (an artist's exact name gives their discography) or paste a link to an album, playlist or artist.
+The torrent's files, or the albums found with their tracks, are shown as a tree (Space marks folders or files). Claude suggests where each album goes in `~/Music` and changes the plan by what you write ("this is art pop", a path) until you accept it, then the marked files
 are downloaded, uploaded with `sync-music.sh`, the catalog is republished and the cmus library refreshed.
 `set added_local_copy=ask` (default), `delete` or `keep` decides what happens to the local copy. Needs
-`python-libtorrent`, `python-anthropic` and `ANTHROPIC_API_KEY=...` in `~/.config/cmus-b2/env`.
+`python-libtorrent`, `python-anthropic` and `ANTHROPIC_API_KEY=...` in `~/.config/cmus-b2/env`; YouTube Music also
+`python-ytmusicapi`, `python-mutagen` and `yt-dlp`. Its tracks are the best stream YouTube gives without Premium (Opus
+about 130 kbit/s), kept as is, tagged from the album, with `cover.jpg`; no lossless.
 
 Seeding: `contrib/cmus-b2-seed.service` (edit the path, then `systemctl --user enable --now cmus-b2-seed`) seeds the
 added torrents from the bucket mount, with the files at their library paths and nothing downloaded; files whose tags
