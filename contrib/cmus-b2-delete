@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Delete the bucket tracks selected in cmus from the bucket and the library.
+In cmus: ":bind common X run footclient -N <repo>/contrib/cmus-b2-delete" opens
+it in a new window for the selected track, album or artist. Lists what goes and
+asks y/N. Whole files go, so a CUE track takes the other tracks of its file;
+when nothing is left of an album's folder, its other files (covers, .cue, logs)
+go too. The files are hidden in the bucket (its lifecycle rule removes hidden
+files after 30 days, until then they can be restored), dropped from
+catalog.json.gz, and their local copies in download_dir go to the trash. Then
+cmus-b2 reloads the library.
+"""
+import argparse
+import gzip
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+
+p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+p.add_argument("files", nargs="+", help="files of the selected tracks, as cmus passes them")
+p.add_argument("--remote", default="b2music:buyolitsez-music", help="rclone path of the bucket")
+a = p.parse_args()
+here = os.path.dirname(os.path.abspath(__file__))
+cache = os.path.expanduser("~/.cache/cmus-b2")
+
+
+def option(name):
+    out = subprocess.run(["cmus-remote", "-Q"], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        if line.startswith(f"set {name} "):
+            return line[len(f"set {name} "):]
+    return ""
+
+
+def rclone(*args, **kw):
+    return subprocess.run(["rclone", *args], check=True, text=True, **kw)
+
+
+def done(msg, code=0):
+    input(f"{msg} Enter closes the window.")
+    sys.exit(code)
+
+
+def cue_files(cue):
+    """The .cue file and the audio files it refers to."""
+    with open(cue, encoding="utf-8", errors="replace") as f:
+        names = re.findall(r'^\s*FILE\s+"(.+?)"', f.read(), re.M)
+    return [cue] + [os.path.join(os.path.dirname(cue), n) for n in names]
+
+
+bucket, local = option("bucket_dir"), option("download_dir")
+if not bucket:
+    done("Set bucket_dir in cmus.", 1)
+files = []
+for f in a.files:
+    files += cue_files(f[len("cue://"):].rsplit("/", 1)[0]) if f.startswith("cue://") else [f]
+paths = {f[len(bucket) + 1:] for f in files if f.startswith(bucket + "/")}
+if not paths:
+    done("No bucket tracks selected.", 1)
+
+# the published catalog, not the cached one, so that nothing published since is lost
+catalog_file = os.path.join(cache, "catalog.json.gz")
+rclone("copyto", f"{a.remote}/catalog.json.gz", catalog_file)
+with gzip.open(catalog_file, "rt", encoding="utf-8") as f:
+    catalog = json.load(f)
+
+affected = [al for al in catalog["albums"] if any(t["path"] in paths for t in al["tracks"])]
+print("To delete from the bucket:")
+for al in affected:
+    n = sum(t["path"] in paths for t in al["tracks"])
+    whole = "" if n == len(al["tracks"]) else f" ({n} of {len(al['tracks'])} tracks)"
+    print(f"  {al['artist']} - {al['title']}{whole}")
+gone = [t for al in affected for t in al["tracks"] if t["path"] in paths]
+size = sum(t.get("size", 0) for t in {t["path"]: t for t in gone}.values())
+if input(f"Delete {len(gone)} tracks, {size / 2**30:.1f} GB? They can be restored for 30 days. [y/N] ").strip().lower() != "y":
+    sys.exit(0)
+
+for al in catalog["albums"]:
+    al["tracks"] = [t for t in al["tracks"] if t["path"] not in paths]
+catalog["albums"] = [al for al in catalog["albums"] if al["tracks"]]
+# the rest of an album's folder goes when no track of any album is left in it
+left = {t["path"] for al in catalog["albums"] for t in al["tracks"]}
+hide = set(paths)
+for d in {al["dir"] for al in affected}:
+    if not any(p.startswith(d + "/") for p in left):
+        out = rclone("lsf", "-R", "--files-only", f"{a.remote}/music/{d}", capture_output=True).stdout
+        hide |= {f"{d}/{n}" for n in out.splitlines()}
+
+with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt") as lst:
+    lst.write("\n".join(sorted(hide)) + "\n")
+    lst.flush()
+    # on B2 this hides the files: the lifecycle rule removes them later
+    rclone("delete", f"{a.remote}/music", "--files-from-raw", lst.name)
+with gzip.open(catalog_file, "wt", encoding="utf-8") as f:
+    json.dump(catalog, f, ensure_ascii=False, separators=(",", ":"))
+rclone("copyto", catalog_file, f"{a.remote}/catalog.json.gz")
+
+trashed = 0
+if local:
+    for path in hide:
+        copy = os.path.join(local, path)
+        if os.path.exists(copy):
+            subprocess.run(["gio", "trash", copy], check=True)
+            trashed += 1
+        d = os.path.dirname(copy)
+        while d.startswith(local + "/") and os.path.isdir(d) and not os.listdir(d):
+            os.rmdir(d)
+            d = os.path.dirname(d)
+
+subprocess.run([os.path.join(here, "cmus-b2"), "--remote", a.remote, "--mount", bucket] + (["--music", local] if local else []), check=True)
+msg = f"Deleted {len(gone)} tracks" + (f", {trashed} local copies to the trash" if trashed else "")
+subprocess.run(["cmus-remote", "-C", f"echo {msg}"])
+done(msg + ".")
