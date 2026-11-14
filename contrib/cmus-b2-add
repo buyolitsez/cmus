@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
-"""Add albums from a .torrent to the music library and the B2 bucket.
+"""Add albums from a .torrent or YouTube Music to the music library and the B2 bucket.
 
-  cmus-b2-add [file.torrent]    # by default the newest .torrent with music in ~/Downloads
+  cmus-b2-add [file.torrent]    # without a torrent asks for the source first
 
-Shows the torrent's folders and files as a tree to mark what to download, asks
+The first screen offers the newest .torrent with music in ~/Downloads (Enter) or
+takes a YouTube Music search ("artist album", or an artist's name for their
+discography) or link to an album, playlist or artist.
+Shows the torrent's folders and files (or the albums found and their tracks) as a tree to mark what to download, asks
 Claude where each one goes in the music folder (next to the artist's albums if
 the artist is there, otherwise a new path in the same genre/artist/album
 layout); you answer in words or with paths until you accept. Then downloads only
 the marked files, uploads them with sync-music.sh, republishes the catalog,
 refreshes the cmus library and hands the torrent to cmus-b2-seed, which seeds
-it from the bucket. The local copy is removed, kept (cmus plays it as
+it from the bucket. YouTube Music tracks are its best stream without a
+re-encode (Opus about 130 kbit/s without Premium), tagged, with cover.jpg. The local copy is removed, kept (cmus plays it as
 downloaded) or you are asked, by the cmus option added_local_copy.
 
 In cmus: ":bind common T shell footclient -N <repo>/contrib/cmus-b2-add" opens
-it in a new window. Needs python-libtorrent, python-anthropic and ANTHROPIC_API_KEY
+it in a new window. Needs python-libtorrent, python-anthropic, python-ytmusicapi, python-mutagen,
+yt-dlp and ANTHROPIC_API_KEY
 (in the environment or as ANTHROPIC_API_KEY=... in ~/.config/cmus-b2/env).
 """
 import argparse
+import concurrent.futures
 import curses
 import glob
 import gzip
@@ -27,6 +33,8 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.parse
+import urllib.request
 
 import anthropic
 import libtorrent as lt
@@ -47,6 +55,7 @@ a = p.parse_args()
 music = os.path.expanduser(a.music)
 tools = os.path.expanduser(a.tools)
 cache = os.path.expanduser("~/.cache/cmus-b2")
+os.environ.setdefault("ESCDELAY", "25")  # Esc quits at once
 
 
 def ask(prompt):
@@ -107,20 +116,20 @@ def load_env():
                 os.environ.setdefault(k, v.strip().strip("'\""))
 
 
-def plan_albums(torrent_name, albums):
+def plan_albums(origin, albums):
     """Where each album goes (relative to the music folder): Claude proposes a plan for all of them,
     you answer in words ("this is art pop", "skip the live album", a path) until you accept it."""
     listing = "\n".join(
         f"- {src or '(torrent root)'}\n" + "".join(f"    {n}\n" for n in names[:40])
         for src, names in albums.items())
-    library = library_listing("\n".join([torrent_name, *albums]))
+    library = library_listing("\n".join([origin, *albums]))
     prompt = f"""Folders of my music library, relative to the library root: all genres and artists, a few
-albums of each genre, and the folders whose names occur in the torrent:
+albums of each genre, and the folders whose names occur in the albums I add:
 <library>
 {library}
 </library>
 
-I am adding albums from the torrent "{torrent_name}". Their folders in the torrent, with the files in each:
+I am adding albums from {origin}. Their folders there, with the files in each:
 <albums>
 {listing}</albums>
 
@@ -163,7 +172,7 @@ then answer with the whole plan again."""
         print()
         for x in answer:
             src, target, exists = x["source"], x["target"].strip("/"), x["exists"].strip("/")
-            print(f"{src or torrent_name}")
+            print(f"{src or origin}")
             if exists or not target:
                 print(f"  skip: {'already in the library at ' + exists if exists else x['why']}")
             elif os.path.exists(os.path.join(music, target)):
@@ -194,9 +203,10 @@ class Node:
         return [self] if self.index is not None else [f for c in self.children.values() for f in c.files()]
 
 
-def pick(scr, title, files):
+def pick(scr, title, files, fmt=size, ordered=False):
     """Tree of the torrent's folders and files: arrows move and open folders, Space marks.
-    Returns the indices of the marked files, or None."""
+    Returns the indices of the marked files, or None. fmt shows the third field of files; ordered keeps
+    the order of files instead of sorting by name."""
     root = Node("")
     for i, path, n in files:
         node = root
@@ -210,7 +220,8 @@ def pick(scr, title, files):
         next(iter(root.children.values())).open = True
 
     def visible(node):
-        for c in sorted(node.children.values(), key=lambda c: (c.index is not None, c.name.casefold())):
+        for c in node.children.values() if ordered else sorted(
+                node.children.values(), key=lambda c: (c.index is not None, c.name.casefold())):
             yield c
             if c.open:
                 yield from visible(c)
@@ -226,13 +237,13 @@ def pick(scr, title, files):
         top = min(max(top, cur - page + 1), cur)
         marked = [f for f in root.files() if f.marked]
         scr.erase()
-        scr.addnstr(0, 0, f"{title}   marked: {len(marked)} files, {size(sum(f.size for f in marked))}", w - 1, curses.A_BOLD)
+        scr.addnstr(0, 0, f"{title}   marked: {len(marked)} files, {fmt(sum(f.size for f in marked))}", w - 1, curses.A_BOLD)
         for y, node in enumerate(rows[top:top + page], 1):
             fl = node.files()
             box = "[x]" if all(f.marked for f in fl) else "[-]" if any(f.marked for f in fl) else "[ ]"
             name = node.name if node.index is not None else ("▾ " if node.open else "▸ ") + node.name + "/"
             line = f"{box} {'  ' * node.depth}{name}"
-            sz = size(node.size)
+            sz = fmt(node.size)
             text = line[:max(0, w - len(sz) - 3)].ljust(w - len(sz) - 3) + " " + sz
             scr.addnstr(y, 0, text, w - 1, curses.A_REVERSE if top + y - 1 == cur else 0)
         scr.addnstr(h - 1, 0, "↑↓ move  → open  ← close  Space mark  a all  Enter download marked  q quit", w - 1, curses.A_DIM)
@@ -308,10 +319,139 @@ def newest_music_torrent():
     return None
 
 
-def main():
-    path = a.torrent or newest_music_torrent()
-    if not path:
-        sys.exit("No .torrent with music in ~/Downloads")
+def source(scr, torrent, error):
+    """First screen: Enter takes the torrent, or type a YouTube Music search or link. Returns the text
+    typed ("" for the torrent), or None to quit."""
+    curses.use_default_colors()
+    text = ""
+    while True:
+        h, w = scr.getmaxyx()
+        scr.erase()
+        scr.addnstr(0, 0, "Add music", w - 1, curses.A_BOLD)
+        scr.addnstr(2, 0, f"Enter: torrent {os.path.basename(torrent)}" if torrent else "No .torrent with music in ~/Downloads",
+                    w - 1, 0 if torrent else curses.A_DIM)
+        scr.addnstr(4, 0, 'YouTube Music: an artist, "artist album" or a link', w - 1)
+        if error:
+            scr.addnstr(7, 0, error, w - 1, curses.A_DIM)
+        scr.addnstr(h - 1, 0, "Enter search (the torrent if empty)  Esc quit", w - 1, curses.A_DIM)
+        scr.addnstr(5, 0, "> " + text[-(w - 4):], w - 1)
+        curses.curs_set(1)
+        k = scr.get_wch()
+        if k == "\x1b":
+            return None
+        elif k in ("\n", "\r", curses.KEY_ENTER):
+            if text.strip() or torrent:
+                return text.strip()
+        elif k in (curses.KEY_BACKSPACE, "\x7f", "\b"):
+            text = text[:-1]
+        elif k == "\x15":  # Ctrl+U
+            text = ""
+        elif isinstance(k, str) and k.isprintable():
+            text += k
+
+
+def yt_albums(query):
+    """Albums for a search or link: [(folder name, album, tracks)]. A link to an artist or an artist's
+    exact name gives their discography, otherwise the albums found."""
+    from ytmusicapi import YTMusic
+    yt = YTMusic()
+    url = urllib.parse.urlparse(query)
+    ids, artist = [], None
+    if url.scheme:
+        q = urllib.parse.parse_qs(url.query)
+        last = url.path.rstrip("/").split("/")[-1]
+        if "list" in q:
+            ids = [yt.get_album_browse_id(q["list"][0])]
+        elif last.startswith("MPREb_"):
+            ids = [last]
+        elif last.startswith("UC"):
+            artist = last
+        if not any(ids) and not artist:
+            raise ValueError("Not a link to an album, playlist or artist")
+    else:
+        found = yt.search(query, filter="artists", limit=1)
+        if found and found[0]["artist"].casefold() == query.casefold():
+            artist = found[0]["browseId"]
+        else:
+            ids = [x["browseId"] for x in yt.search(query, filter="albums", limit=20)]
+    if artist:
+        info = yt.get_artist(artist)
+        for kind in ("albums", "singles"):
+            part = info.get(kind) or {}
+            more = yt.get_artist_albums(part["browseId"], part["params"]) if part.get("params") else part.get("results", [])
+            ids += [x["browseId"] for x in more]
+    with concurrent.futures.ThreadPoolExecutor(8) as ex:
+        albums = list(ex.map(yt.get_album, ids))
+    out, names = [], set()
+    for al in albums:
+        artists = ", ".join(x["name"] for x in al.get("artists") or [])
+        base = name = f"{artists} - {al['title']} ({', '.join(filter(None, [al.get('year'), al.get('type')]))})".replace("/", "∕")
+        n = 2
+        while name in names:  # editions with the same title
+            name, n = f"{base} [{n}]", n + 1
+        names.add(name)
+        out.append((name, al, [t for t in al["tracks"] if t.get("videoId")]))
+    return out
+
+
+def duration(s):
+    return f"{s // 3600}:{s // 60 % 60:02}:{s % 60:02}" if s >= 3600 else f"{s // 60}:{s % 60:02}"
+
+
+def track_file(t):
+    return f"{t.get('trackNumber') or 0:02} {t['title']}".replace("/", "∕")
+
+
+def yt_download(al, tracks, folder):
+    """The tracks' best audio streams as they are (no re-encode), tagged, and the album cover as cover.jpg."""
+    import mutagen
+    os.makedirs(folder, exist_ok=True)
+    artists = ", ".join(x["name"] for x in al.get("artists") or [])
+    for n, t in enumerate(tracks, 1):
+        print(f"[{n}/{len(tracks)}] {t['title']}")
+        base = os.path.join(folder, track_file(t))
+        subprocess.run(["yt-dlp", "-q", "--progress", "--no-playlist", "-f", "bestaudio", "-x", "-o", base + ".%(ext)s",
+                        f"https://music.youtube.com/watch?v={t['videoId']}"], check=True)
+        path = next(f for f in glob.glob(glob.escape(base) + ".*") if os.path.splitext(f)[1] in AUDIO_EXT)
+        tags = mutagen.File(path, easy=True)
+        tags["title"], tags["album"], tags["albumartist"] = t["title"], al["title"], artists
+        tags["artist"] = ", ".join(x["name"] for x in t.get("artists") or []) or artists
+        if t.get("trackNumber"):
+            tags["tracknumber"] = str(t["trackNumber"])
+        if al.get("year"):
+            tags["date"] = al["year"]
+        tags.save()
+    cover = max(al.get("thumbnails") or [{}], key=lambda x: x.get("width", 0)).get("url")
+    if cover:  # the same picture in full size
+        urllib.request.urlretrieve(re.sub(r"=w\d+-h\d+.*$", "=w1200-h1200", cover), os.path.join(folder, "cover.jpg"))
+
+
+def add_youtube(query):
+    """Adds albums found by a YouTube Music search or link. Returns the plan, or None to search again."""
+    print("Searching YouTube Music...")
+    albums = yt_albums(query)
+    if not albums:
+        raise ValueError(f"Nothing found for {query}")
+    tracks = [(name, al, t) for name, al, ts in albums for t in ts]
+    picked = curses.wrapper(pick, f"YouTube Music: {query}",
+                            [(i, f"{name}/{track_file(t)}", t.get("duration_seconds") or 0)
+                             for i, (name, al, t) in enumerate(tracks)], duration, True)
+    if not picked:
+        return None
+    chosen = {}
+    for i in picked:
+        chosen.setdefault(tracks[i][0], []).append(tracks[i])
+    plan = plan_albums("YouTube Music", {name: [track_file(t) for _, _, t in ts] for name, ts in chosen.items()})
+    if not plan:
+        return {}
+    for name, target in plan.items():
+        print(f"Downloading {name}")
+        yt_download(chosen[name][0][1], [t for _, _, t in chosen[name]], os.path.join(music, target))
+    upload(plan)
+    return plan
+
+
+def add_torrent(path):
     info = lt.torrent_info(path)
     fs = info.layout()
     print(f"Torrent: {os.path.basename(path)}")
@@ -319,7 +459,7 @@ def main():
     picked = curses.wrapper(pick, info.name(), [(i, fs.file_path(i), fs.file_size(i)) for i in range(fs.num_files())
                                                 if not fs.file_flags(i) & lt.file_storage.flag_pad_file])
     if not picked:
-        return
+        return {}
     albums = {}  # album folder in the torrent -> indices of its picked files (all files below it)
     for i in picked:
         if os.path.splitext(fs.file_path(i))[1].lower() in AUDIO_EXT:
@@ -335,10 +475,10 @@ def main():
         sys.exit("No audio files picked")
     chosen = sorted(albums)
 
-    plan = plan_albums(info.name(), {src: [os.path.relpath(fs.file_path(i), src or ".") for i in albums[src]]
-                                     for src in chosen})
+    plan = plan_albums(f'the torrent "{info.name()}"',
+                       {src: [os.path.relpath(fs.file_path(i), src or ".") for i in albums[src]] for src in chosen})
     if not plan:
-        return
+        return {}
 
     incoming = os.path.join(cache, "incoming", str(info.info_hashes().get_best()))
     resume = incoming + ".resume"
@@ -352,7 +492,24 @@ def main():
             os.makedirs(dst)
             shutil.move(os.path.join(incoming, fs.file_path(0)), dst)
     shutil.rmtree(incoming)
+    upload(plan)
 
+    # seeding from the bucket (contrib/cmus-b2-seed), with the files at their library paths
+    seed_map = {}
+    for src, target in plan.items():
+        for i in albums[src]:
+            rel = fs.file_path(i)[len(src) + 1:] if src else os.path.basename(fs.file_path(i))
+            seed_map[str(i)] = os.path.join(target, rel)
+    with open(incoming + ".map", "w", encoding="utf-8") as f:
+        json.dump(seed_map, f, ensure_ascii=False)
+    here = os.path.dirname(os.path.realpath(__file__))
+    subprocess.run([os.path.join(here, "cmus-b2-seed"), "add", path, incoming + ".map", resume], check=True)
+    os.remove(incoming + ".map")
+    os.remove(resume)
+    return plan
+
+
+def upload(plan):
     print("Uploading to the bucket...")
     subprocess.run([os.path.join(tools, "sync-music.sh"), "--", *plan.values()], check=True)
     print("Publishing the catalog...")
@@ -365,17 +522,27 @@ def main():
     if subprocess.run([os.path.join(here, "cmus-b2")]).returncode:  # the rest does not need it
         print("cmus-b2 failed: the cmus library is not refreshed, run contrib/cmus-b2 later")
 
-    # seeding from the bucket (contrib/cmus-b2-seed), with the files at their library paths
-    seed_map = {}
-    for src, target in plan.items():
-        for i in albums[src]:
-            rel = fs.file_path(i)[len(src) + 1:] if src else os.path.basename(fs.file_path(i))
-            seed_map[str(i)] = os.path.join(target, rel)
-    with open(incoming + ".map", "w", encoding="utf-8") as f:
-        json.dump(seed_map, f, ensure_ascii=False)
-    subprocess.run([os.path.join(here, "cmus-b2-seed"), "add", path, incoming + ".map", resume], check=True)
-    os.remove(incoming + ".map")
-    os.remove(resume)
+
+def main():
+    if a.torrent:
+        plan = add_torrent(a.torrent)
+    else:
+        torrent, error = newest_music_torrent(), ""
+        while True:
+            query = curses.wrapper(source, torrent, error)
+            if query is None:
+                return
+            if not query:
+                plan = add_torrent(torrent)
+                break
+            try:
+                plan = add_youtube(query)
+            except ValueError as e:  # nothing found: say so and ask again
+                plan, error = None, str(e)
+            if plan is not None:
+                break
+    if not plan:
+        return
 
     keep = option("added_local_copy") or "ask"
     for target in plan.values():
