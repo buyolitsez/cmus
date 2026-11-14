@@ -222,7 +222,9 @@ def run():
             for h, t in torrents.items():
                 now = {i: mtimes.get(p) for i, p in t["files"].items()}
                 if mtimes and now != t.get("mtimes") and h in handles:
-                    subprocess.run(["pkill", "-HUP", "-f", f"rclone mount .*{MOUNT}"])
+                    for top in {p.split("/")[0] for p in t["files"].values()}:
+                        subprocess.run(["rclone", "rc", "vfs/refresh", f"dir={top}", "recursive=true"],
+                                       capture_output=True)
                     handles[h].force_recheck()
                     t["mtimes"] = now
                     save(TORRENTS, torrents)

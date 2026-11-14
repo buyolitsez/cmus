@@ -357,10 +357,13 @@ def main():
     subprocess.run([os.path.join(tools, "sync-music.sh"), "--", *plan.values()], check=True)
     print("Publishing the catalog...")
     subprocess.run([os.path.join(tools, "publish-catalog.sh")], check=True)
-    # the mount keeps its directory listings (see rclone-b2music.service); SIGHUP drops them
-    subprocess.run(["pkill", "-HUP", "-f", f"rclone mount {a.remote}/music"])
+    # the mount keeps its directory listings a year (see rclone-b2music.service)
+    for top in {t.split("/")[0] for t in plan.values()}:
+        subprocess.run(["rclone", "rc", "vfs/refresh", f"dir={top}", "recursive=true"], capture_output=True)
+    subprocess.run(["rclone", "rc", "vfs/refresh"], capture_output=True)
     here = os.path.dirname(os.path.realpath(__file__))
-    subprocess.run([os.path.join(here, "cmus-b2")], check=True)
+    if subprocess.run([os.path.join(here, "cmus-b2")]).returncode:  # the rest does not need it
+        print("cmus-b2 failed: the cmus library is not refreshed, run contrib/cmus-b2 later")
 
     # seeding from the bucket (contrib/cmus-b2-seed), with the files at their library paths
     seed_map = {}
