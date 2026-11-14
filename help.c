@@ -111,6 +111,20 @@ static void help_add_defaults(void)
 {
 	struct cmus_opt *opt;
 
+	help_add_text("b2-player");
+	help_add_text("---------");
+	help_add_text("y                like: bucket and Last.fm, add to playlist");
+	help_add_text("Y                sync loved tracks with Last.fm");
+	help_add_text("H / A            show only liked / show all");
+	help_add_text("d                download to ~/Music");
+	help_add_text("R                continue what the phone played");
+	help_add_text("O                assistant (cmus-b2-ask)");
+	help_add_text("T                add albums from a torrent (cmus-b2-add)");
+	help_add_text("8 / 9            lyrics / torrents (a add, space seed, D remove)");
+	help_add_text("* 8 Enter        rate the selected albums 1-10");
+	help_add_text(":filter rating>=8      albums rated 8 and up (rating=-1: unrated)");
+	help_add_text(":filter downloaded     tracks with a copy in ~/Music");
+	help_add_text("");
 	help_add_text("Keybindings");
 	help_add_text("-----------");
 	bound_head = help_head.prev;
