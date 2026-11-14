@@ -127,7 +127,7 @@ Filters: `H` shows only liked tracks, `A` all tracks again (`:filter lastfm_love
 
 Adding albums from a torrent: `:bind common T shell footclient -N <repo>/contrib/cmus-b2-add` (or `a` in the torrents
 view) opens a window with the files of the newest `.torrent` with music in `~/Downloads` as a tree (Space marks folders
-or files). Claude suggests where each album goes in `~/Music` (accept, skip or type another path), then the marked files
+or files). Claude suggests where each album goes in `~/Music` and changes the plan by what you write ("this is art pop", a path) until you accept it, then the marked files
 are downloaded, uploaded with `sync-music.sh`, the catalog is republished and the cmus library refreshed.
 `set added_local_copy=ask` (default), `delete` or `keep` decides what happens to the local copy. Needs
 `python-libtorrent`, `python-anthropic` and `ANTHROPIC_API_KEY=...` in `~/.config/cmus-b2/env`.

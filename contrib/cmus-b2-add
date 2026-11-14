@@ -6,7 +6,7 @@
 Shows the torrent's folders and files as a tree to mark what to download, asks
 Claude where each one goes in the music folder (next to the artist's albums if
 the artist is there, otherwise a new path in the same genre/artist/album
-layout), and lets you accept, skip or type another path. Then downloads only
+layout); you answer in words or with paths until you accept. Then downloads only
 the marked files, uploads them with sync-music.sh, republishes the catalog,
 refreshes the cmus library and hands the torrent to cmus-b2-seed, which seeds
 it from the bucket. The local copy is removed, kept (cmus plays it as
@@ -107,8 +107,9 @@ def load_env():
                 os.environ.setdefault(k, v.strip().strip("'\""))
 
 
-def propose(torrent_name, albums):
-    """Claude's target folder (relative to the music folder) for each album."""
+def plan_albums(torrent_name, albums):
+    """Where each album goes (relative to the music folder): Claude proposes a plan for all of them,
+    you answer in words ("this is art pop", "skip the live album", a path) until you accept it."""
     listing = "\n".join(
         f"- {src or '(torrent root)'}\n" + "".join(f"    {n}\n" for n in names[:40])
         for src, names in albums.items())
@@ -136,7 +137,8 @@ For each album choose the folder it should have in the library, relative to the 
 - Use the real artist and album names (from the folder and file names), without release-group tags,
   bitrate or tracker names; keep the year if known.
 - The target must be a folder that does not exist in the library yet; never add suffixes to make it new.
-Answer with one entry per album, "source" exactly as given."""
+Answer with one entry per album, "source" exactly as given. I may answer with corrections in my own words;
+then answer with the whole plan again."""
     schema = {
         "type": "object",
         "properties": {"albums": {"type": "array", "items": {
@@ -146,16 +148,40 @@ Answer with one entry per album, "source" exactly as given."""
             "required": ["source", "target", "exists", "why"], "additionalProperties": False}}},
         "required": ["albums"], "additionalProperties": False,
     }
-    print("Asking Claude where to put them...")
     load_env()
-    r = anthropic.Anthropic().beta.messages.create(
-        model=MODEL, max_tokens=8000, messages=[{"role": "user", "content": prompt}],
-        output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
-        betas=["server-side-fallback-2026-07-01"], fallbacks="default")
-    if r.stop_reason != "end_turn":
-        sys.exit(f"Claude did not answer ({r.stop_reason})")
-    text = next(b.text for b in r.content if b.type == "text")
-    return {x["source"]: (x["target"].strip("/"), x["exists"].strip("/"), x["why"]) for x in json.loads(text)["albums"]}
+    client, messages = anthropic.Anthropic(), [{"role": "user", "content": prompt}]
+    while True:
+        print("Asking Claude where to put them...")
+        r = client.beta.messages.create(
+            model=MODEL, max_tokens=8000, messages=messages,
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
+            betas=["server-side-fallback-2026-07-01"], fallbacks="default")
+        if r.stop_reason != "end_turn":
+            sys.exit(f"Claude did not answer ({r.stop_reason})")
+        answer = json.loads(next(b.text for b in r.content if b.type == "text"))["albums"]
+        plan, taken = {}, []
+        print()
+        for x in answer:
+            src, target, exists = x["source"], x["target"].strip("/"), x["exists"].strip("/")
+            print(f"{src or torrent_name}")
+            if exists or not target:
+                print(f"  skip: {'already in the library at ' + exists if exists else x['why']}")
+            elif os.path.exists(os.path.join(music, target)):
+                print(f"  -> {target}  (this folder already exists)")
+                taken.append(target)
+            else:
+                print(f"  -> {target}  ({x['why']})")
+                plan[src] = target
+        messages.append({"role": "assistant", "content": r.content})
+        if taken:  # tell Claude without asking
+            feedback = "These folders already exist in my music folder, choose others: " + ", ".join(taken)
+        else:
+            feedback = ask("\nEnter: accept, q: quit, or tell Claude what to change: ")
+            if not feedback:
+                return plan
+            if feedback.lower() == "q":
+                return {}
+        messages.append({"role": "user", "content": feedback})
 
 
 class Node:
@@ -309,27 +335,8 @@ def main():
         sys.exit("No audio files picked")
     chosen = sorted(albums)
 
-    targets = propose(info.name(), {src: [os.path.relpath(fs.file_path(i), src or ".") for i in albums[src]]
-                                    for src in chosen})
-    plan = {}
-    for src in chosen:
-        target, exists, why = targets.get(src, ("", "", "no answer"))
-        print(f"\n{src or info.name()}")
-        if exists:  # skipped unless a path is typed
-            print(f"  already in the library: {exists}")
-            prompt = "  Enter: skip, or type a path to add it anyway: "
-        else:
-            print(f"  -> {target}  ({why})")
-            prompt = "  Enter: ok, n: skip, or type another path: "
-        while True:
-            ans = ask(prompt)
-            if ans.lower() == "n" or not ans and exists:
-                break
-            target = (ans or target).strip("/")
-            if target and not os.path.exists(os.path.join(music, target)):
-                plan[src] = target
-                break
-            print(f"  {os.path.join(music, target)} already exists, type another path")
+    plan = plan_albums(info.name(), {src: [os.path.relpath(fs.file_path(i), src or ".") for i in albums[src]]
+                                     for src in chosen})
     if not plan:
         return
 
