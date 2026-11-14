@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Continue listening between cmus and b2-player, through state/now-playing.json.
 
-Whoever plays writes the track and position there. Hook it into cmus by adding
+Whoever plays writes the track, the queue from it on and the position there. Hook it into cmus by adding
     cmus-b2-now "$@" &
 to the status_display_program script: on play, pause and track change of a
 bucket track it writes the file. When cmus starts or stops and the phone played
 later, the command line says so.
 
-"cmus-b2-now --resume" plays the track the file names, from where it stopped:
+"cmus-b2-now --resume" plays the track the file names, from where it stopped, and
+puts the rest of that queue into the cmus play queue:
 ":bind common R shell cmus-b2-now --resume".
 """
 import fcntl
@@ -21,6 +22,7 @@ import time
 REMOTE = "b2music:buyolitsez-music/state/now-playing.json"
 OUT = os.path.expanduser("~/.cache/cmus-b2")
 STATE = os.path.join(OUT, "now-playing-status")
+QUEUE_MAX = 200  # as in the app
 
 
 def cmus(*cmd):
@@ -83,8 +85,32 @@ def position_now(h, duration):
     return moved if h.get("playing") and moved < duration else h["position_ms"] / 1000
 
 
-def write(tid, position, playing):
-    data = {"version": 1, "track": tid, "position_ms": int(position * 1000), "playing": playing,
+def album_rest(tracks, tid):
+    """The tracks after tid on its album."""
+    d = os.path.dirname(next(t["path"] for i, _, t in tracks if i == tid))
+    album = [i for i, _, t in tracks if os.path.dirname(t["path"]) == d]
+    return album[album.index(tid) + 1:]
+
+
+def upcoming(tid, roots):
+    """The tracks after tid as cmus will play them: its play queue, then the rest of the album."""
+    tracks = list(catalog_tracks())
+    path = os.path.join(OUT, "now-playing-queue")
+    if os.path.exists(path):
+        os.remove(path)
+    cmus("-C", f"save -q {path}")
+    try:
+        with open(path) as f:
+            files = f.read().splitlines()
+    except FileNotFoundError:
+        files = []
+    ids = {k: i for i, k, _ in tracks}
+    return [ids[k] for k in (key_of(f, roots) for f in files) if k in ids] + album_rest(tracks, tid)
+
+
+def write(queue, position, playing):
+    tid = queue[0]
+    data = {"version": 1, "track": tid, "queue": queue[:QUEUE_MAX], "position_ms": int(position * 1000), "playing": playing,
             "time": int(time.time() * 1000), "device": "arch"}
     subprocess.run(["rclone", "rcat", REMOTE], input=json.dumps(data, indent=1, ensure_ascii=False).encode(), check=True)
     # the bucket keeps every version: only the newest one is worth keeping
@@ -116,13 +142,24 @@ def hook(args):
         key = key_of(q.get("file", ""), (q.get("set bucket_dir"), q.get("set download_dir")))
         tid = next((tid for tid, k, _ in catalog_tracks() if k == key), None) if key else None
         if tid:
-            write(tid, float(q.get("position", 0)), status == "playing")
+            roots = (q.get("set bucket_dir"), q.get("set download_dir"))
+            write([tid] + upcoming(tid, roots), float(q.get("position", 0)), status == "playing")
     elif status in ("paused", "stopped"):
         h = fetch()
         if h and h.get("device") == "phone":
             t = next((t for tid, _, t in catalog_tracks() if tid == h["track"]), None)
             if t:
                 cmus("-C", f"echo Phone: {t['title']} · {fmt(position_now(h, t['duration']))}, press R to continue")
+
+
+def file_of(key, bucket, download):
+    """The file cmus plays for a catalog key: the downloaded copy if there is one."""
+    if isinstance(key, tuple):
+        d = os.path.join(bucket, key[0])
+        cues = sorted(n for n in os.listdir(d) if n.lower().endswith(".cue"))
+        return f"cue://{os.path.join(d, cues[0])}/{key[1]}"
+    local = os.path.join(download, key) if download else ""
+    return local if local and os.path.exists(local) else os.path.join(bucket, key)
 
 
 def resume():
@@ -132,18 +169,13 @@ def resume():
         return 1
     q = query()
     bucket, download = q.get("set bucket_dir", ""), q.get("set download_dir", "")
-    hit = next(((k, t) for tid, k, t in catalog_tracks() if tid == h["track"]), None)
-    if not hit:
+    tracks = list(catalog_tracks())
+    by_id = {tid: (k, t) for tid, k, t in tracks}
+    if h["track"] not in by_id:
         cmus("-C", f"echo Not in the catalog: {h['track']}")
         return 1
-    key, t = hit
-    if isinstance(key, tuple):
-        d = os.path.join(bucket, key[0])
-        cues = sorted(n for n in os.listdir(d) if n.lower().endswith(".cue"))
-        filename = f"cue://{os.path.join(d, cues[0])}/{key[1]}"
-    else:
-        local = os.path.join(download, key) if download else ""
-        filename = local if local and os.path.exists(local) else os.path.join(bucket, key)
+    key, t = by_id[h["track"]]
+    filename = file_of(key, bucket, download)
     position = position_now(h, t["duration"])
     cmus("-C", f"player-play {filename}")
     # over the rclone mount the file takes a moment to open, and a seek before that is lost
@@ -153,6 +185,17 @@ def resume():
             break
         time.sleep(0.1)
     cmus("-C", f"seek {int(position)}")
+    # The rest of the queue goes into the play queue. cmus goes on with the album after it anyway,
+    # so the album's own continuation is left out.
+    rest = [i for i in h.get("queue", [])[1:] if i in by_id]
+    album = album_rest(tracks, h["track"])
+    if rest == album[:len(rest)]:
+        rest = []
+    elif album and rest[-len(album):] == album:
+        rest = rest[:-len(album)]
+    cmus("-c", "-q")
+    if rest:
+        cmus("-q", *(file_of(by_id[i][0], bucket, download) for i in rest))
     return 0
 
 
