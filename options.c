@@ -2125,7 +2125,7 @@ void resume_load(void)
 		if (ti) {
 			player_set_file(ti);
 			if (resume.status != PLAYER_STATUS_STOPPED)
-				player_seek(resume.position, 0, resume.status == PLAYER_STATUS_PLAYING);
+				player_seek(resume.position, 0, 0);
 		}
 		free(resume.filename);
 	}
