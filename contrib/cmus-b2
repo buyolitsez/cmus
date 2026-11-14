@@ -10,10 +10,12 @@ Writes to ~/.cache/cmus-b2:
   likes        liked tracks for the lastfm_loved_file option
   ratings      album ratings from state/ratings.json for the album_ratings_file option
   lyrics/      lyrics from the bucket for contrib/cmus-b2-lyrics
-If cmus is running, adds the library and reloads the likes and ratings.
+If cmus is running, replaces the library and reloads the likes and ratings.
 
 With --likes only state/likes.json and state/ratings.json are fetched and
-reloaded when they changed; contrib/cmus-b2-likes.timer runs that every minute.
+reloaded when they changed, and the library only when the catalog changed;
+contrib/cmus-b2-likes.timer runs that every minute. Tracks deleted on the phone
+are listed in state/deleted.tsv: then their copies in --music go to the trash.
 """
 import argparse
 import gzip
@@ -26,6 +28,7 @@ p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDes
 p.add_argument("--remote", default="b2music:buyolitsez-music", help="rclone path of the bucket")
 p.add_argument("--mount", default="~/b2music", help="where music/ of the bucket is mounted")
 p.add_argument("--out", default="~/.cache/cmus-b2")
+p.add_argument("--music", default="~/Music", help="local copies of the bucket's music/ (download_dir)")
 p.add_argument("--likes", action="store_true", help="only fetch and reload the likes and ratings")
 a = p.parse_args()
 mount = os.path.expanduser(a.mount)
@@ -34,9 +37,47 @@ out = os.path.expanduser(a.out)
 if not a.likes and (not os.path.isdir(mount) or not os.listdir(mount)):
     sys.exit(f"{mount} is not mounted: systemctl --user start rclone-b2music")
 os.makedirs(out, exist_ok=True)
+
+
+def stamp(path):
+    try:
+        st = os.stat(path)
+        return st.st_size, st.st_mtime_ns
+    except FileNotFoundError:
+        return None
+
+
 # rclone copies a file only when it changed
-for name in ("state/likes.json",) if a.likes else ("catalog.json.gz", "state/likes.json"):
+catalog_before = stamp(os.path.join(out, "catalog.json.gz"))
+for name in ("catalog.json.gz", "state/likes.json"):
     subprocess.run(["rclone", "copyto", f"{a.remote}/{name}", os.path.join(out, os.path.basename(name))], check=True)
+if a.likes and stamp(os.path.join(out, "catalog.json.gz")) != catalog_before:
+    a.likes = False
+    if not os.path.isdir(mount) or not os.listdir(mount):
+        sys.exit(f"{mount} is not mounted: systemctl --user start rclone-b2music")
+
+
+def deleted():
+    r = subprocess.run(["rclone", "cat", f"{a.remote}/state/deleted.tsv"], capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else ""
+
+
+# the phone deletes from the bucket and the catalog and lists the paths here; their local copies go to the trash
+listed = "" if a.likes else deleted()
+if listed:
+    music = os.path.expanduser(a.music)
+    for path in listed.splitlines():
+        copy = os.path.join(music, path)
+        if path and os.path.exists(copy):
+            subprocess.run(["gio", "trash", copy], check=True)
+            print("trashed", copy)
+        d = os.path.dirname(copy)
+        while d.startswith(music + "/") and os.path.isdir(d) and not os.listdir(d):
+            os.rmdir(d)
+            d = os.path.dirname(d)
+    # paths added in the meantime wait for the next run
+    if deleted() == listed:
+        subprocess.run(["rclone", "deletefile", f"{a.remote}/state/deleted.tsv"], check=True)
 # there are no ratings until tools/sync-ratings.py of b2-player first runs
 subprocess.run(["rclone", "copyto", f"{a.remote}/state/ratings.json", os.path.join(out, "ratings.json")], capture_output=True)
 
@@ -143,6 +184,7 @@ os.replace(library + ".tmp", library)
 print(f"{len(lines)} tracks, {len(loved)} liked")
 
 if cmus_running:
+    subprocess.run(["cmus-remote", "-C", "clear -l"], check=True)
     subprocess.run(["cmus-remote", "-l", library], check=True)
     subprocess.run(["cmus-remote", "-C", f"set lastfm_loved_file={likes_file}"], check=True)
     subprocess.run(["cmus-remote", "-C", f"set album_ratings_file={ratings_file}"], check=True)
