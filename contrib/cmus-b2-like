@@ -2,7 +2,8 @@
 """Like or unlike the bucket tracks selected in cmus, in state/likes.json.
 
 Bind it in cmus with ":bind common K run cmus-b2-like". If all the selected
-tracks are liked they are unliked, otherwise liked. The change goes on top of
+tracks are liked they are unliked, otherwise liked; with --like they are only
+liked (for a script that also loves them on Last.fm). The change goes on top of
 the bucket copy, so likes from the phone are kept, and cmus-b2 --likes then
 reloads the likes in cmus. Runs in the background and reports in the cmus
 command line when done.
@@ -29,6 +30,8 @@ def option(name):
 
 
 def main():
+    only_like = sys.argv[1:2] == ["--like"]
+    files = sys.argv[2:] if only_like else sys.argv[1:]
     bucket = option("bucket_dir")
     with gzip.open(os.path.join(OUT, "catalog.json.gz"), "rt", encoding="utf-8") as f:
         catalog = json.load(f)
@@ -45,7 +48,7 @@ def main():
             tracks[key] = (tid, bool(t.get("liked")), t["title"])
 
     selected = []
-    for f in dict.fromkeys(sys.argv[1:]):
+    for f in dict.fromkeys(files):
         if f.startswith("cue://"):
             cue, n = f[len("cue://"):].rsplit("/", 1)
             key = (os.path.relpath(os.path.dirname(cue), bucket), int(n))
@@ -59,7 +62,7 @@ def main():
 
     likes = json.loads(subprocess.run(["rclone", "cat", REMOTE], capture_output=True, check=True).stdout or "{}")
     added, removed = set(likes.get("added", [])), set(likes.get("removed", []))
-    like = not all((flag or tid in added) and tid not in removed for tid, flag, _ in selected)
+    like = only_like or not all((flag or tid in added) and tid not in removed for tid, flag, _ in selected)
     for tid, flag, _ in selected:
         if like:
             removed.discard(tid)

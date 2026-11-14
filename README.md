@@ -144,5 +144,6 @@ In `~/.config/cmus/rc`: `set lastfm_loved_file=~/.cache/cmus-b2/likes` (likes fr
 Run `contrib/cmus-b2` again after the catalog changes; `:update-cache` drops tracks deleted from the bucket.
 
 Likes sync both ways with the phone through `state/likes.json`. `:bind common K run cmus-b2-like` likes the selected
-tracks (or unlikes them if all are liked); the change goes on top of the bucket copy, so likes from the phone are kept.
+tracks (or unlikes them if all are liked; `cmus-b2-like --like` only likes them); the change goes on top of the bucket
+copy, so likes from the phone are kept.
 `contrib/cmus-b2-likes.timer` brings likes from the phone within a minute (`cmus-b2 --likes`, install as written in it).
