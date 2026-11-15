@@ -6,31 +6,15 @@ top of the bucket copy as "pending"; tools/sync-ratings.py of b2-player then
 writes it to the listening diary. cmus-b2 --likes reloads the ratings in cmus.
 Runs in the background and reports in the cmus command line when done.
 """
-import gzip
 import json
 import os
 import subprocess
 import sys
 import time
 
-REMOTE = "b2music:buyolitsez-music/state/ratings.json"
-OUT = os.path.expanduser("~/.cache/cmus-b2")
+from cmus_b2 import OUT, REMOTE as BUCKET, catalog_tracks, clean, cmus, key_of, option
 
-
-def cmus(*cmd):
-    return subprocess.run(["cmus-remote", *cmd], capture_output=True, text=True).stdout
-
-
-def clean(s):
-    """As contrib/cmus-b2 writes the album artist and album."""
-    return " ".join(str(s).split())
-
-
-def option(name):
-    for line in cmus("-Q").splitlines():
-        if line.startswith(f"set {name} "):
-            return line[len(f"set {name} "):]
-    return ""
+REMOTE = BUCKET + "/state/ratings.json"
 
 
 def main():
@@ -38,22 +22,11 @@ def main():
     if not 1 <= rating <= 10:
         raise ValueError("the rating is 1 to 10")
     bucket = option("bucket_dir")
-    with gzip.open(os.path.join(OUT, "catalog.json.gz"), "rt", encoding="utf-8") as f:
-        catalog = json.load(f)
-    # cmus filename -> album, as contrib/cmus-b2 names the tracks
-    albums = {}
-    for al in catalog["albums"]:
-        for t in al["tracks"]:
-            path = t["path"]
-            albums[(os.path.dirname(path), t.get("track")) if "start" in t else path] = al
+    albums = {k: al for _, k, _, al in catalog_tracks()}  # cmus key -> album
 
     selected = {}
     for f in sys.argv[2:]:
-        if f.startswith("cue://"):
-            cue, n = f[len("cue://"):].rsplit("/", 1)
-            key = (os.path.relpath(os.path.dirname(cue), bucket), int(n))
-        else:
-            key = os.path.relpath(f, bucket)
+        key = key_of(f, (bucket,))
         if key in albums:
             selected[albums[key]["id"]] = albums[key]
     if not selected:

@@ -13,25 +13,18 @@ import argparse
 import gzip
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
 
+from cmus_b2 import OUT, REMOTE, cue_files, option
+
 p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 p.add_argument("files", nargs="+", help="files of the selected tracks, as cmus passes them")
-p.add_argument("--remote", default="b2music:buyolitsez-music", help="rclone path of the bucket")
+p.add_argument("--remote", default=REMOTE, help="rclone path of the bucket")
 a = p.parse_args()
 here = os.path.dirname(os.path.abspath(__file__))
-cache = os.path.expanduser("~/.cache/cmus-b2")
-
-
-def option(name):
-    out = subprocess.run(["cmus-remote", "-Q"], capture_output=True, text=True).stdout
-    for line in out.splitlines():
-        if line.startswith(f"set {name} "):
-            return line[len(f"set {name} "):]
-    return ""
+cache = OUT
 
 
 def rclone(*args, **kw):
@@ -41,13 +34,6 @@ def rclone(*args, **kw):
 def done(msg, code=0):
     input(f"{msg} Enter closes the window.")
     sys.exit(code)
-
-
-def cue_files(cue):
-    """The .cue file and the audio files it refers to."""
-    with open(cue, encoding="utf-8", errors="replace") as f:
-        names = re.findall(r'^\s*FILE\s+"(.+?)"', f.read(), re.M)
-    return [cue] + [os.path.join(os.path.dirname(cue), n) for n in names]
 
 
 bucket, local = option("bucket_dir"), option("download_dir")

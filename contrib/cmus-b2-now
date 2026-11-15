@@ -12,60 +12,17 @@ puts the rest of that queue into the cmus play queue:
 ":bind common R shell cmus-b2-now --resume".
 """
 import fcntl
-import gzip
 import json
 import os
 import subprocess
 import sys
 import time
 
-REMOTE = "b2music:buyolitsez-music/state/now-playing.json"
-OUT = os.path.expanduser("~/.cache/cmus-b2")
+from cmus_b2 import OUT, REMOTE as BUCKET, catalog_tracks, cmus, key_of, query
+
+REMOTE = BUCKET + "/state/now-playing.json"
 STATE = os.path.join(OUT, "now-playing-status")
 QUEUE_MAX = 200  # as in the app
-
-
-def cmus(*cmd):
-    return subprocess.run(["cmus-remote", *cmd], capture_output=True, text=True).stdout
-
-
-def query():
-    """cmus-remote -Q as a dict: status, file, position, and the options as "set <name>"."""
-    q = {}
-    for line in cmus("-Q").splitlines():
-        if line.startswith("set "):
-            k, _, v = line[4:].partition(" ")
-            k = "set " + k
-        else:
-            k, _, v = line.partition(" ")
-        q[k] = v
-    return q
-
-
-def catalog_tracks():
-    """(id, cmus key, track) for every catalog track; the key is the bucket path,
-    or (album dir, track number) for a CUE track, as contrib/cmus-b2 adds them."""
-    with gzip.open(os.path.join(OUT, "catalog.json.gz"), "rt", encoding="utf-8") as f:
-        catalog = json.load(f)
-    for al in catalog["albums"]:
-        for t in al["tracks"]:
-            path = t["path"]
-            if "start" in t:
-                yield f"{path}#{float(t['start'])}", (os.path.dirname(path), t.get("track")), t
-            else:
-                yield path, path, t
-
-
-def key_of(filename, roots):
-    """The catalog key of a file under bucket_dir or download_dir, else None."""
-    cue = filename.startswith("cue://")
-    if cue:
-        filename, n = filename[len("cue://"):].rsplit("/", 1)
-    for root in roots:
-        if root and filename.startswith(root.rstrip("/") + "/"):
-            rel = os.path.relpath(filename, root)
-            return (os.path.dirname(rel), int(n)) if cue else rel
-    return None
 
 
 def fmt(sec):
@@ -87,8 +44,8 @@ def position_now(h, duration):
 
 def album_rest(tracks, tid):
     """The tracks after tid on its album."""
-    d = os.path.dirname(next(t["path"] for i, _, t in tracks if i == tid))
-    album = [i for i, _, t in tracks if os.path.dirname(t["path"]) == d]
+    d = os.path.dirname(next(t["path"] for i, _, t, _ in tracks if i == tid))
+    album = [i for i, _, t, _ in tracks if os.path.dirname(t["path"]) == d]
     return album[album.index(tid) + 1:]
 
 
@@ -103,7 +60,7 @@ def upcoming(tid, roots, tracks):
             files = f.read().splitlines()
     except FileNotFoundError:
         files = []
-    ids = {k: i for i, k, _ in tracks}
+    ids = {k: i for i, k, _, _ in tracks}
     return [ids[k] for k in (key_of(f, roots) for f in files) if k in ids] + album_rest(tracks, tid)
 
 
@@ -140,14 +97,14 @@ def hook(args):
     if status == "playing" or (prev_pid == pid and prev_status == "playing"):
         key = key_of(q.get("file", ""), (q.get("set bucket_dir"), q.get("set download_dir")))
         tracks = list(catalog_tracks()) if key else []
-        tid = next((tid for tid, k, _ in tracks if k == key), None)
+        tid = next((tid for tid, k, _, _ in tracks if k == key), None)
         if tid:
             roots = (q.get("set bucket_dir"), q.get("set download_dir"))
             write([tid] + upcoming(tid, roots, tracks), float(q.get("position", 0)), status == "playing")
     elif status in ("paused", "stopped"):
         h = fetch()
         if h and h.get("device") == "phone":
-            t = next((t for tid, _, t in catalog_tracks() if tid == h["track"]), None)
+            t = next((t for tid, _, t, _ in catalog_tracks() if tid == h["track"]), None)
             if t:
                 cmus("-C", f"echo Phone: {t['title']} · {fmt(position_now(h, t['duration']))}, press R to continue")
 
@@ -170,7 +127,7 @@ def resume():
     q = query()
     bucket, download = q.get("set bucket_dir", ""), q.get("set download_dir", "")
     tracks = list(catalog_tracks())
-    by_id = {tid: (k, t) for tid, k, t in tracks}
+    by_id = {tid: (k, t) for tid, k, t, _ in tracks}
     if h["track"] not in by_id:
         cmus("-C", f"echo Not in the catalog: {h['track']}")
         return 1
