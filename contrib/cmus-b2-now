@@ -92,9 +92,8 @@ def album_rest(tracks, tid):
     return album[album.index(tid) + 1:]
 
 
-def upcoming(tid, roots):
+def upcoming(tid, roots, tracks):
     """The tracks after tid as cmus will play them: its play queue, then the rest of the album."""
-    tracks = list(catalog_tracks())
     path = os.path.join(OUT, "now-playing-queue")
     if os.path.exists(path):
         os.remove(path)
@@ -140,10 +139,11 @@ def hook(args):
     q = query()
     if status == "playing" or (prev_pid == pid and prev_status == "playing"):
         key = key_of(q.get("file", ""), (q.get("set bucket_dir"), q.get("set download_dir")))
-        tid = next((tid for tid, k, _ in catalog_tracks() if k == key), None) if key else None
+        tracks = list(catalog_tracks()) if key else []
+        tid = next((tid for tid, k, _ in tracks if k == key), None)
         if tid:
             roots = (q.get("set bucket_dir"), q.get("set download_dir"))
-            write([tid] + upcoming(tid, roots), float(q.get("position", 0)), status == "playing")
+            write([tid] + upcoming(tid, roots, tracks), float(q.get("position", 0)), status == "playing")
     elif status in ("paused", "stopped"):
         h = fetch()
         if h and h.get("device") == "phone":
