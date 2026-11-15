@@ -48,10 +48,17 @@ def stamp(path):
 
 
 # rclone copies a file only when it changed
-catalog_before = stamp(os.path.join(out, "catalog.json.gz"))
 for name in ("catalog.json.gz", "state/likes.json"):
     subprocess.run(["rclone", "copyto", f"{a.remote}/{name}", os.path.join(out, os.path.basename(name))], check=True)
-if a.likes and stamp(os.path.join(out, "catalog.json.gz")) != catalog_before:
+# the catalog of the last finished full run, so that a failed one is retried by the next --likes run
+built_file = os.path.join(out, "library-catalog")
+catalog_stamp = str(stamp(os.path.join(out, "catalog.json.gz")))
+try:
+    with open(built_file) as f:
+        built = f.read()
+except FileNotFoundError:
+    built = None
+if a.likes and catalog_stamp != built:
     a.likes = False
     if not os.path.isdir(mount) or not os.listdir(mount):
         sys.exit(f"{mount} is not mounted: systemctl --user start rclone-b2music")
@@ -188,3 +195,5 @@ if cmus_running:
     subprocess.run(["cmus-remote", "-l", library], check=True)
     subprocess.run(["cmus-remote", "-C", f"set lastfm_loved_file={likes_file}"], check=True)
     subprocess.run(["cmus-remote", "-C", f"set album_ratings_file={ratings_file}"], check=True)
+with open(built_file, "w") as f:
+    f.write(catalog_stamp)
