@@ -39,6 +39,8 @@ import urllib.request
 import anthropic
 import libtorrent as lt
 
+from cmus_b2 import REMOTE, option
+
 AUDIO_EXT = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".ape", ".wv", ".aac"}
 DISC_DIR = re.compile(r"^(cd|disc|disk|диск)\s*\d+\b", re.I)
 MODEL = "claude-sonnet-5-5"
@@ -49,7 +51,7 @@ GENERIC = re.compile(rf"^[\W\d]*{_WORD}([\W\d]+{_WORD})*[\W\d]*$", re.I)
 p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 p.add_argument("torrent", nargs="?")
 p.add_argument("--music", default="~/Music")
-p.add_argument("--remote", default="b2music:buyolitsez-music", help="rclone path of the bucket")
+p.add_argument("--remote", default=REMOTE, help="rclone path of the bucket")
 p.add_argument("--tools", default="~/projects/b2-player/tools", help="sync-music.sh and publish-catalog.sh")
 a = p.parse_args()
 music = os.path.expanduser(a.music)
@@ -63,12 +65,6 @@ def ask(prompt):
         return input(prompt).strip()
     except EOFError:
         sys.exit(1)
-
-
-def option(name):
-    """A cmus option, if cmus is running."""
-    out = subprocess.run(["cmus-remote", "-Q"], capture_output=True, text=True).stdout
-    return next((l[len(f"set {name} "):] for l in out.splitlines() if l.startswith(f"set {name} ")), "")
 
 
 def size(n):

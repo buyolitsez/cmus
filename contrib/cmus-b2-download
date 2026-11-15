@@ -8,29 +8,10 @@ track brings the .cue file and the audio files it names. Runs in the
 background and reports in the cmus command line when done.
 """
 import os
-import re
 import shutil
-import subprocess
 import sys
 
-
-def cmus(*cmd):
-    return subprocess.run(["cmus-remote", *cmd], capture_output=True, text=True).stdout
-
-
-def option(name):
-    for line in cmus("-Q").splitlines():
-        if line.startswith(f"set {name} "):
-            return line[len(f"set {name} "):]
-    return ""
-
-
-def cue_files(cue):
-    """The audio files a .cue file refers to and the .cue file itself, last,
-    as cmus counts the track downloaded once the .cue file is there."""
-    with open(cue, encoding="utf-8", errors="replace") as f:
-        names = re.findall(r'^\s*FILE\s+"(.+?)"', f.read(), re.M)
-    return [os.path.join(os.path.dirname(cue), n) for n in names] + [cue]
+from cmus_b2 import cmus, cue_files, option
 
 
 def download(src, dst):
