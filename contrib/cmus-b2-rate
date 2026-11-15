@@ -77,8 +77,9 @@ def main():
     cmus("-C", f"set album_ratings_file={ratings_file}")
     cmus("-C", f"echo Rated {rating}: {what}")
 
-    r = subprocess.run(["rclone", "cat", REMOTE], capture_output=True)
-    state = json.loads(r.stdout) if r.returncode == 0 and r.stdout else {"version": 1, "albums": {}}
+    # a missing file gives empty output; a failed read must not pass for one, or every other rating is lost
+    r = subprocess.run(["rclone", "cat", REMOTE], capture_output=True, check=True)
+    state = json.loads(r.stdout) if r.stdout else {"version": 1, "albums": {}}
     now = int(time.time() * 1000)
     for aid in selected:
         state["albums"][aid] = {"rating": rating, "time": now, "pending": True}
