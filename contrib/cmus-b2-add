@@ -13,7 +13,10 @@ Soulseek account and keeps it in ~/.config/cmus-b2/slskd.env.
 Shows the torrent's folders and files (or the albums found and their tracks) as a tree to mark what to download, asks
 Claude where each one goes in the music folder (next to the artist's albums if
 the artist is there, otherwise a new path in the same genre/artist/album
-layout); you answer in words or with paths until you accept. Then downloads only
+layout); you answer in words or with paths until you accept. Albums from YouTube
+Music and Soulseek then download and get added in the background, shown at the
+top of the first screen, while you search for more; their local copy is removed
+once it is in the bucket unless added_local_copy is keep. A torrent downloads in the window. Then downloads only
 the marked files, offers to tag them in MusicBrainz Picard first, uploads them with sync-music.sh, republishes the catalog,
 refreshes the cmus library and hands the torrent to cmus-b2-seed, which seeds
 it from the bucket. YouTube Music tracks are its best stream without a
@@ -28,6 +31,7 @@ yt-dlp, mpv (to listen first) and ANTHROPIC_API_KEY
 import argparse
 import concurrent.futures
 import curses
+import fcntl
 import getpass
 import glob
 import gzip
@@ -38,6 +42,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import uuid
@@ -60,11 +65,14 @@ p.add_argument("torrent", nargs="?")
 p.add_argument("--music", default="~/Music")
 p.add_argument("--remote", default=REMOTE, help="rclone path of the bucket")
 p.add_argument("--tools", default="~/projects/b2-player/tools", help="sync-music.sh and publish-catalog.sh")
+p.add_argument("--job", help=argparse.SUPPRESS)  # a background download started by the window
 a = p.parse_args()
 music = os.path.expanduser(a.music)
 tools = os.path.expanduser(a.tools)
 cache = os.path.expanduser("~/.cache/cmus-b2")
 SLSKD = "http://127.0.0.1:5030/api/v0/"
+JOBS = os.path.join(cache, "jobs")  # a folder per background download: job.json, pid, status, log
+job_status = None  # the status file, in a background download
 os.environ.setdefault("ESCDELAY", "25")  # Esc quits at once
 
 
@@ -73,6 +81,15 @@ def ask(prompt):
         return input(prompt).strip()
     except EOFError:
         sys.exit(1)
+
+
+def say(text):
+    """Progress on one line that replaces itself, also the status of a background download."""
+    if job_status:
+        with open(job_status + ".tmp", "w", encoding="utf-8") as f:
+            f.write(text.strip())
+        os.replace(job_status + ".tmp", job_status)
+    print(f"\r{text}   ", end="", flush=True)
 
 
 def size(n):
@@ -338,21 +355,29 @@ def source(scr, torrent, error, where):
     """First screen: Enter takes the torrent, or type a search or link; Tab switches the search between
     YouTube Music and Soulseek. Returns where to search and the text typed ("" for the torrent), or None to quit."""
     curses.use_default_colors()
+    scr.timeout(1000)  # the downloads above change
     text = ""
     while True:
         h, w = scr.getmaxyx()
         scr.erase()
         scr.addnstr(0, 0, "Add music", w - 1, curses.A_BOLD)
-        scr.addnstr(2, 0, f"Enter: torrent {os.path.basename(torrent)}" if torrent else "No .torrent with music in ~/Downloads",
+        jobs = jobs_lines()[-max(0, h - 10):]
+        for y, line in enumerate(jobs, 1):
+            scr.addnstr(y, 0, line, w - 1)
+        top = len(jobs) + 1 if jobs else 0
+        scr.addnstr(top + 2, 0, f"Enter: torrent {os.path.basename(torrent)}" if torrent else "No .torrent with music in ~/Downloads",
                     w - 1, 0 if torrent else curses.A_DIM)
         hint = 'an artist, "artist album" or a link' if where == "YouTube Music" else '"artist album"'
-        scr.addnstr(4, 0, f"{where}: {hint}", w - 1)
+        scr.addnstr(top + 4, 0, f"{where}: {hint}", w - 1)
         if error:
-            scr.addnstr(7, 0, error, w - 1, curses.A_DIM)
+            scr.addnstr(top + 7, 0, error, w - 1, curses.A_DIM)
         scr.addnstr(h - 1, 0, "Enter search (the torrent if empty)  Tab YouTube Music / Soulseek  Esc quit", w - 1, curses.A_DIM)
-        scr.addnstr(5, 0, "> " + text[-(w - 4):], w - 1)
+        scr.addnstr(top + 5, 0, "> " + text[-(w - 4):], w - 1)
         curses.curs_set(1)
-        k = scr.get_wch()
+        try:
+            k = scr.get_wch()
+        except curses.error:  # a second without a key
+            continue
         if k == "\x1b":
             return None
         elif k in ("\n", "\r", curses.KEY_ENTER):
@@ -426,7 +451,8 @@ def yt_download(al, tracks, folder):
     os.makedirs(folder, exist_ok=True)
     artists = ", ".join(x["name"] for x in al.get("artists") or [])
     for n, t in enumerate(tracks, 1):
-        print(f"[{n}/{len(tracks)}] {t['title']}")
+        say(f"[{n}/{len(tracks)}] {t['title']}")
+        print()
         base = os.path.join(folder, track_file(t))
         subprocess.run(["yt-dlp", "-q", "--progress", "--no-playlist", "-f", "bestaudio", "-x", "-o", base + ".%(ext)s",
                         f"https://music.youtube.com/watch?v={t['videoId']}"], check=True)
@@ -465,7 +491,7 @@ def preview(tracks):
 
 
 def add_youtube(query):
-    """Adds albums found by a YouTube Music search or link. Returns the plan, or None to search again."""
+    """Adds albums found by a YouTube Music search or link in the background. Returns None if nothing was added."""
     print("Searching YouTube Music...")
     albums = yt_albums(query)
     if not albums:
@@ -483,24 +509,26 @@ def add_youtube(query):
         chosen.setdefault(tracks[i][0], []).append(tracks[i])
     plan = plan_albums("YouTube Music", {name: [track_file(t) for _, _, t in ts] for name, ts in chosen.items()})
     if not plan:
-        return {}
-    for name, target in plan.items():
-        print(f"Downloading {name}")
-        yt_download(chosen[name][0][1], [t for _, _, t in chosen[name]], os.path.join(music, target))
-    upload(plan)
-    return plan
+        return None
+    start_job("YouTube Music", [{"target": target, "album": chosen[name][0][1], "tracks": [t for _, _, t in chosen[name]]}
+                                for name, target in plan.items()])
+    return True
 
 
 def slskd(path, body=None):
     """A call to the slskd API (contrib/slskd.service: local only, without authentication)."""
     req = urllib.request.Request(SLSKD + path, json.dumps(body).encode() if body is not None else None,
                                  {"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = r.read()
-    except urllib.error.HTTPError as e:  # slskd says why: the peer is offline and the like
-        raise RuntimeError(f"slskd: {e.read().decode(errors='replace') or e}") from None
-    return json.loads(data) if data else None
+    for _ in range(10):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = r.read()
+            return json.loads(data) if data else None
+        except urllib.error.HTTPError as e:  # slskd says why: the peer is offline and the like
+            if e.code != 429:  # 429: another download is being enqueued
+                raise RuntimeError(f"slskd: {e.read().decode(errors='replace') or e}") from None
+            time.sleep(1)
+    raise RuntimeError("slskd: busy")
 
 
 def slsk_login():
@@ -618,13 +646,13 @@ def slsk_download(user, files, folder):
             if again := [f for f in again if f["filename"] not in failed]:
                 enqueue(again)
         except OSError:  # slskd restarts
-            print("\rWaiting for slskd...   ", end="", flush=True)
+            say("waiting for slskd")
             continue
         ts = latest.values()
         queued = sum("Queued" in t["state"] for t in ts)
         rate = sum(t["averageSpeed"] for t in ts if "InProgress" in t["state"])
-        print(f"\r{len(ok) + len(failed)}/{len(files)} files  {size(sum(t['bytesTransferred'] for t in ts))} of {size(total)}"
-              f"  {rate / 2**20:.1f} MB/s" + (f"  queued {queued}" if queued else "") + "   ", end="", flush=True)
+        say(f"{len(ok) + len(failed)}/{len(files)} files  {size(sum(t['bytesTransferred'] for t in ts))} of {size(total)}"
+            f"  {rate / 2**20:.1f} MB/s" + (f"  queued {queued}" if queued else ""))
     print()
     staged = os.path.join(slskd("options")["directories"]["downloads"], tag)
     if os.path.isdir(staged):
@@ -634,7 +662,7 @@ def slsk_download(user, files, folder):
 
 
 def add_soulseek(query):
-    """Adds albums found on Soulseek. Returns the plan, or None to search again."""
+    """Adds albums found on Soulseek in the background. Returns None if nothing was added."""
     folders = slsk_folders(query)
     if not folders:
         raise ValueError(f"Nothing found on Soulseek for {query}")
@@ -647,17 +675,84 @@ def add_soulseek(query):
     for i in picked:
         chosen.setdefault(files[i][0], []).append(files[i])
     plan = plan_albums("Soulseek", {name: [f["rel"] for _, _, f in fs] for name, fs in chosen.items()})
-    for name, target in list(plan.items()):
-        print(f"Downloading {name}")
-        failed = slsk_download(chosen[name][0][1], [f for _, _, f in chosen[name]], os.path.join(music, target))
-        if failed:
-            print("Not downloaded:\n  " + "\n  ".join(failed))
-            if len(failed) == len(chosen[name]) or ask(f"Add {target} without them? [y/N] ").lower() != "y":
-                del plan[name]
-                shutil.rmtree(os.path.join(music, target), ignore_errors=True)
-    if plan:
-        upload(plan)
-    return plan
+    if not plan:
+        return None
+    start_job("Soulseek", [{"target": target, "user": chosen[name][0][1], "files": [f for _, _, f in chosen[name]]}
+                           for name, target in plan.items()])
+    return True
+
+
+def start_job(where, albums):
+    """Downloads and adds the albums in a background process (run_job), so the window can search again."""
+    tag = bool(shutil.which("picard")) and ask("Tag with Picard after downloading? [y/N] ").lower() == "y"
+    d = os.path.join(JOBS, str(uuid.uuid4()))
+    os.makedirs(d)
+    with open(os.path.join(d, "job.json"), "w", encoding="utf-8") as f:
+        json.dump({"source": where, "albums": albums, "tag": tag}, f, ensure_ascii=False)
+    with open(os.path.join(d, "status"), "w") as f:
+        f.write("starting")
+    with open(os.path.join(d, "log"), "w") as log:
+        subprocess.Popen([sys.executable, os.path.realpath(__file__), "--job", d, "--music", a.music,
+                          "--remote", a.remote, "--tools", a.tools],
+                         stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+
+
+def run_job(d):
+    """A background download: downloads the albums, then adds them one job at a time (the catalog is
+    published by one at once). Soulseek albums with files that did not download are skipped."""
+    global job_status
+    job_status = os.path.join(d, "status")
+    with open(os.path.join(d, "pid"), "w") as f:
+        f.write(str(os.getpid()))
+    job = json.load(open(os.path.join(d, "job.json"), encoding="utf-8"))
+    try:
+        plan, skipped = {}, []
+        for x in job["albums"]:
+            folder = os.path.join(music, x["target"])
+            print(f"Downloading {x['target']}")
+            if job["source"] == "YouTube Music":
+                yt_download(x["album"], x["tracks"], folder)
+            elif failed := slsk_download(x["user"], x["files"], folder):
+                print("\nNot downloaded:\n  " + "\n  ".join(failed))
+                shutil.rmtree(folder, ignore_errors=True)
+                skipped.append(f"{os.path.basename(x['target'])} ({len(failed)} files did not download)")
+                continue
+            plan[x["target"]] = x["target"]
+        if plan:
+            say("waiting for another album to be added")
+            with open(os.path.join(JOBS, "upload.lock"), "w") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                upload(plan, job["tag"])
+            remove_local(plan, keep_asks=False)
+        say("done" + (", skipped: " + ", ".join(skipped) if skipped else "") if plan else "error: skipped " + ", ".join(skipped))
+    except Exception as e:
+        traceback.print_exc()
+        say(f"error: {e} (log: {d}/log)")
+
+
+def jobs_lines():
+    """The background downloads for the first screen: running ones and those that ended in the last hour."""
+    lines = []
+    for d in sorted(glob.glob(os.path.join(JOBS, "*/")), key=os.path.getmtime):
+        try:
+            job = json.load(open(os.path.join(d, "job.json"), encoding="utf-8"))
+            status, ended = open(os.path.join(d, "status"), encoding="utf-8").read(), os.path.getmtime(os.path.join(d, "status"))
+            pid = int(open(os.path.join(d, "pid")).read()) if os.path.exists(os.path.join(d, "pid")) else None
+        except (OSError, ValueError):
+            continue
+        if status.startswith(("done", "error")):
+            if time.time() - ended > 86400:
+                shutil.rmtree(d, ignore_errors=True)
+            if time.time() - ended > 3600:
+                continue
+        elif pid:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                status = f"stopped (log: {d}log)"
+        names = ", ".join("/".join(x["target"].split("/")[-2:]) for x in job["albums"])
+        lines.append(f"{job['source']}: {names}  ·  {status}")
+    return lines
 
 
 def add_torrent(path):
@@ -718,12 +813,14 @@ def add_torrent(path):
     return plan
 
 
-def upload(plan):
-    if shutil.which("picard") and ask("Tag with Picard before uploading? [y/N] ").lower() == "y":
+def upload(plan, tag=None):
+    """tag: open Picard first; None asks."""
+    if tag if tag is not None else shutil.which("picard") and ask("Tag with Picard before uploading? [y/N] ").lower() == "y":
+        say("Picard is open: save the tags (Ctrl+S) and close it to go on\n")
         picard([os.path.join(music, t) for t in plan.values()])
-    print("Uploading to the bucket...")
+    say("uploading to the bucket\n")
     subprocess.run([os.path.join(tools, "sync-music.sh"), "--", *plan.values()], check=True)
-    print("Publishing the catalog...")
+    say("publishing the catalog\n")
     # without encoding the light copies of the whole library, which takes hours
     subprocess.run([os.path.join(tools, "publish-catalog.sh")], check=True, env={**os.environ, "LITE": "0"})
     # the mount keeps its directory listings a year (see rclone-b2music.service)
@@ -736,6 +833,8 @@ def upload(plan):
 
 
 def main():
+    if a.job:
+        return run_job(a.job)
     if a.torrent:
         plan = add_torrent(a.torrent)
     else:
@@ -749,27 +848,31 @@ def main():
                 plan = add_torrent(torrent)
                 break
             try:
-                plan = add_youtube(query) if where == "YouTube Music" else add_soulseek(query)
+                started = add_youtube(query) if where == "YouTube Music" else add_soulseek(query)
+                error = "Downloading in the background, see above; search for more" if started else ""
             except ValueError as e:  # nothing found: say so and ask again
-                plan, error = None, str(e)
-            if plan is not None:
-                break
+                error = str(e)
     if not plan:
         return
+    remove_local(plan)
+    print("Done")
+    ask("Enter to close")
 
+
+def remove_local(plan, keep_asks=True):
+    """Removes the local copies that are in the bucket, by the cmus option added_local_copy: delete, keep,
+    or ask (default), which asks unless keep_asks is False (a background download): then they are removed."""
     keep = option("added_local_copy") or "ask"
     for target in plan.values():
         local, remote = os.path.join(music, target), f"{a.remote}/music/{target}"
         if subprocess.run(["rclone", "check", "--one-way", local, remote], capture_output=True).returncode:
             print(f"{target}: not all files are in the bucket, keeping the local copy")
-        elif keep == "delete" or keep == "ask" and ask(f"Remove the local copy of {target}? [Y/n] ").lower() != "n":
+        elif keep == "delete" or keep == "ask" and (not keep_asks or ask(f"Remove the local copy of {target}? [Y/n] ").lower() != "n"):
             shutil.rmtree(local)
             try:  # the artist and genre folders, if they are empty now
                 os.removedirs(os.path.dirname(local))
             except OSError:
                 pass
-    print("Done")
-    ask("Enter to close")
 
 
 if __name__ == "__main__":

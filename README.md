@@ -146,6 +146,9 @@ its own mount without a cache (`contrib/rclone-b2music-slsk.service`; 3 uploads,
 torrents view shows what it sent, and it counts to the monthly limit of seeding.
 The torrent's files, or the albums or folders found with their tracks, are shown as a tree (Space marks folders or files; for YouTube Music `p` plays the album, or the track and the rest of its album, with `mpv` before downloading, pausing cmus, and `s` stops). Claude suggests where each album goes in `~/Music` and changes the plan by what you write ("this is art pop", a path) until you accept it, then the marked files
 are downloaded, uploaded with `sync-music.sh`, the catalog is republished and the cmus library refreshed.
+Albums from YouTube Music and Soulseek download and get added in the background, listed at the top of the first
+screen, so you can search for more meanwhile; they are added one at a time and their local copy is removed unless
+`added_local_copy=keep`.
 `set added_local_copy=ask` (default), `delete` or `keep` decides what happens to the local copy. Needs
 `python-libtorrent`, `python-anthropic` and `ANTHROPIC_API_KEY=...` in `~/.config/cmus-b2/env`; YouTube Music also
 `python-ytmusicapi`, `python-mutagen`, `yt-dlp` and `mpv` to listen first. Its tracks are the best stream YouTube gives without Premium (Opus
