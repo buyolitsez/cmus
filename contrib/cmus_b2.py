@@ -31,6 +31,10 @@ def option(name):
     return query().get("set " + name, "")
 
 
+def size(n):
+    return f"{n / 2**30:.1f} GB" if n >= 2**30 else f"{n / 2**20:.0f} MB"
+
+
 def clean(s):
     """As contrib/cmus-b2 writes tags and names."""
     return " ".join(str(s).split())
