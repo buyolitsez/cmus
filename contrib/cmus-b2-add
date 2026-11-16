@@ -15,8 +15,8 @@ Claude where each one goes in the music folder (next to the artist's albums if
 the artist is there, otherwise a new path in the same genre/artist/album
 layout); you answer in words or with paths until you accept. Albums from YouTube
 Music and Soulseek then download and get added in the background, shown at the
-top of the first screen, while you search for more; their local copy is removed
-once it is in the bucket unless added_local_copy is keep. A torrent downloads in the window. Then downloads only
+top of the first screen, while you search for more (what to do with Picard and
+the local copy is asked before). A torrent downloads in the window. Then downloads only
 the marked files, offers to tag them in MusicBrainz Picard first, uploads them with sync-music.sh, republishes the catalog,
 refreshes the cmus library and hands the torrent to cmus-b2-seed, which seeds
 it from the bucket. YouTube Music tracks are its best stream without a
@@ -686,10 +686,13 @@ def add_soulseek(query):
 def start_job(where, albums):
     """Downloads and adds the albums in a background process (run_job), so the window can search again."""
     tag = bool(shutil.which("picard")) and ask("Tag with Picard after downloading? [y/N] ").lower() == "y"
+    keep = option("added_local_copy") or "ask"
+    if keep == "ask":  # asked now, the download goes on without the window
+        keep = "keep" if ask("Remove the local copy once it is in the bucket? [Y/n] ").lower() == "n" else "delete"
     d = os.path.join(JOBS, str(uuid.uuid4()))
     os.makedirs(d)
     with open(os.path.join(d, "job.json"), "w", encoding="utf-8") as f:
-        json.dump({"source": where, "albums": albums, "tag": tag}, f, ensure_ascii=False)
+        json.dump({"source": where, "albums": albums, "tag": tag, "local_copy": keep}, f, ensure_ascii=False)
     with open(os.path.join(d, "status"), "w") as f:
         f.write("starting")
     with open(os.path.join(d, "log"), "w") as log:
@@ -724,7 +727,7 @@ def run_job(d):
             with open(os.path.join(JOBS, "upload.lock"), "w") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 upload(plan, job["tag"])
-            remove_local(plan, keep_asks=False)
+            remove_local(plan, job["local_copy"])
         say("done" + (", skipped: " + ", ".join(skipped) if skipped else "") if plan else "error: skipped " + ", ".join(skipped))
     except Exception as e:
         traceback.print_exc()
@@ -751,7 +754,7 @@ def jobs_lines():
                 os.kill(pid, 0)
             except ProcessLookupError:
                 status = f"stopped (log: {d}log)"
-        names = ", ".join("/".join(x["target"].split("/")[-2:]) for x in job["albums"])
+        names = ", ".join(x["target"].split("/", 1)[-1] for x in job["albums"])  # without the genre
         lines.append(f"{job['source']}: {names}  ·  {status}")
     return lines
 
@@ -860,15 +863,15 @@ def main():
     ask("Enter to close")
 
 
-def remove_local(plan, keep_asks=True):
-    """Removes the local copies that are in the bucket, by the cmus option added_local_copy: delete, keep,
-    or ask (default), which asks unless keep_asks is False (a background download): then they are removed."""
-    keep = option("added_local_copy") or "ask"
+def remove_local(plan, keep=None):
+    """Removes the local copies that are in the bucket: keep is delete, keep or ask, by default the cmus
+    option added_local_copy (ask if not set)."""
+    keep = keep or option("added_local_copy") or "ask"
     for target in plan.values():
         local, remote = os.path.join(music, target), f"{a.remote}/music/{target}"
         if subprocess.run(["rclone", "check", "--one-way", local, remote], capture_output=True).returncode:
             print(f"{target}: not all files are in the bucket, keeping the local copy")
-        elif keep == "delete" or keep == "ask" and (not keep_asks or ask(f"Remove the local copy of {target}? [Y/n] ").lower() != "n"):
+        elif keep == "delete" or keep == "ask" and ask(f"Remove the local copy of {target}? [Y/n] ").lower() != "n":
             shutil.rmtree(local)
             try:  # the artist and genre folders, if they are empty now
                 os.removedirs(os.path.dirname(local))
