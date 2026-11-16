@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""Tag the bucket tracks selected in cmus with MusicBrainz Picard.
+In cmus: ":bind common K run footclient -N <repo>/contrib/cmus-b2-tag" opens it
+in a new window for the selected track, album or artist. The files are tagged
+at their path in the music folder (download_dir): the ones not there are copied
+from the bucket first. Picard opens them in a window of its own: save the tags
+there and close it. Then the changed files are uploaded with
+sync-music.sh, the catalog is republished (without new light copies) and the
+cmus library refreshed; the copies made only for tagging are removed.
+CUE images are left out: Picard tags them as one file. Keep renaming and moving
+files off in Picard's options: the bucket knows the files by their paths, so
+nothing is uploaded when Picard renamed a file.
+"""
+import argparse
+import gzip
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+from cmus_b2 import REMOTE, key_of, option, picard
+
+p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+p.add_argument("files", nargs="+", help="files of the selected tracks, as cmus passes them")
+p.add_argument("--music", default="~/Music")
+p.add_argument("--remote", default=REMOTE, help="rclone path of the bucket")
+p.add_argument("--tools", default="~/projects/b2-player/tools", help="sync-music.sh and publish-catalog.sh")
+a = p.parse_args()
+music = os.path.expanduser(a.music)
+tools = os.path.expanduser(a.tools)
+
+
+def done(msg, code=0):
+    input(f"{msg} Enter closes the window.")
+    sys.exit(code)
+
+
+def stamps(dirs):
+    """size and mtime of every file in the album folders"""
+    out = {}
+    for d in dirs:
+        for root, _, names in os.walk(os.path.join(music, d)):
+            for n in names:
+                st = os.stat(os.path.join(root, n))
+                out[os.path.relpath(os.path.join(root, n), music)] = st.st_size, st.st_mtime_ns
+    return out
+
+
+roots = [option("bucket_dir"), option("download_dir")]
+if not roots[0]:
+    done("Set bucket_dir in cmus.", 1)
+paths = sorted({key_of(f, roots) for f in a.files if not f.startswith("cue://")} - {None})
+if not paths:
+    done("No bucket tracks selected (CUE images are not tagged with Picard).", 1)
+if len(paths) < len(a.files):
+    print("CUE images and files outside the bucket are left out.")
+dirs = sorted({os.path.dirname(x) for x in paths})
+new_dirs = [d for d in dirs if not os.path.isdir(os.path.join(music, d))]
+missing = [x for x in paths if not os.path.exists(os.path.join(music, x))]
+
+if missing:
+    print(f"Copying {len(missing)} files from the bucket...")
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt") as lst:
+        lst.write("\n".join(missing) + "\n")
+        lst.flush()
+        # rclone keeps the mtimes, so sync-music.sh uploads only what Picard changed
+        subprocess.run(["rclone", "copy", f"{a.remote}/music", music, "--files-from-raw", lst.name,
+                        "--transfers", "8", "--progress"], check=True)
+before = stamps(dirs)
+picard([os.path.join(music, x) for x in paths])
+after = stamps(dirs)
+changed = sorted(x for x in after if after[x] != before.get(x))
+gone = sorted(set(before) - set(after))
+
+
+def cleanup():
+    """Remove the copies made for tagging: whole folders that were not here, else the copied files."""
+    for d in new_dirs:
+        shutil.rmtree(os.path.join(music, d), ignore_errors=True)
+    for x in missing:
+        if os.path.exists(os.path.join(music, x)):
+            os.remove(os.path.join(music, x))
+    for d in dirs:
+        d = os.path.join(music, d)
+        try:  # the artist and genre folders, if they are empty now
+            os.removedirs(d if os.path.isdir(d) else os.path.dirname(d))
+        except OSError:
+            pass
+
+
+if gone:
+    print("Picard renamed or moved these files, so nothing is uploaded (turn off renaming and moving in its options):\n  "
+          + "\n  ".join(gone))
+    done(f"The files are in {music}.", 1)
+if not changed:
+    cleanup()
+    done("Nothing was changed.")
+print(f"Changed {len(changed)} files in:\n  " + "\n  ".join(sorted({os.path.dirname(x) for x in changed})))
+
+print("Uploading to the bucket...")
+subprocess.run([os.path.join(tools, "sync-music.sh"), "--", *dirs], check=True,
+               env={**os.environ, "B2_PLAYER_MUSIC": music})
+# make_catalog keeps an album's cover thumbnail once made: drop those of the tagged albums so new art shows
+out = os.path.expanduser(os.environ.get("B2_PLAYER_OUT", "~/.cache/b2-player"))
+covers = os.path.join(out, "covers")
+try:
+    with gzip.open(os.path.join(out, "catalog.json.gz"), "rt", encoding="utf-8") as f:
+        for al in json.load(f)["albums"]:
+            if any(t["path"] in changed for t in al["tracks"]):
+                try:
+                    os.remove(os.path.join(covers, al["id"] + ".jpg"))
+                except FileNotFoundError:
+                    pass
+except FileNotFoundError:
+    pass
+print("Publishing the catalog...")
+subprocess.run([os.path.join(tools, "publish-catalog.sh")], check=True, env={**os.environ, "LITE": "0"})
+# the mount keeps its directory listings a year (see rclone-b2music.service)
+for d in dirs:
+    subprocess.run(["rclone", "rc", "vfs/refresh", f"dir={d}"], capture_output=True)
+here = os.path.dirname(os.path.realpath(__file__))
+if subprocess.run([os.path.join(here, "cmus-b2")]).returncode:
+    print("cmus-b2 failed: the cmus library is not refreshed, run contrib/cmus-b2 later")
+
+if all(subprocess.run(["rclone", "check", "--one-way", os.path.join(music, d), f"{a.remote}/music/{d}"],
+                      capture_output=True).returncode == 0 for d in dirs):
+    cleanup()
+else:
+    print(f"Not all files are in the bucket, the local copies stay in {music}")
+subprocess.run(["cmus-remote", "-C", f"echo Tagged {len(changed)} files with Picard"])
+done("Done.")

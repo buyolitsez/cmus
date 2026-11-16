@@ -118,9 +118,10 @@ static void help_add_defaults(void)
 	help_add_text("H / A            show only liked / show all");
 	help_add_text("d                download to ~/Music");
 	help_add_text("X                delete from the bucket (asks first)");
+	help_add_text("K                tag with Picard (track, album or artist)");
 	help_add_text("R                continue what the phone played");
 	help_add_text("O                assistant (cmus-b2-ask)");
-	help_add_text("T                add albums: torrent, YouTube Music (p listen, s stop), Tab Soulseek");
+	help_add_text("T                add albums: torrent, YouTube Music (p listen, s stop), Tab Soulseek, then Picard");
 	help_add_text("8 / 9            lyrics / torrents (a add, space seed, D remove)");
 	help_add_text("* 8 Enter        rate the selected albums 1-10");
 	help_add_text(":filter rating>=8      albums rated 8 and up (rating=-1: unrated)");
