@@ -39,6 +39,8 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/time.h>
+#include <time.h>
+#include <stdint.h>
 #include <stdarg.h>
 #include <math.h>
 
@@ -113,6 +115,18 @@ static unsigned long consumer_pos = 0;
  * usually same as consumer_pos, sometimes more than consumer_pos
  */
 static unsigned long scale_pos;
+
+/* output stays silent until this long after the last seek, so holding
+ * the seek key doesn't play a tiny chunk after every step */
+#define SEEK_HOLD_MS 200
+static uint64_t seek_hold_until;
+
+static uint64_t now_ms(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 
 /* locking {{{ */
 
@@ -779,6 +793,11 @@ static void *consumer_loop(void *arg)
 			consumer_unlock();
 			continue;
 		}
+		if (now_ms() < seek_hold_until) {
+			consumer_unlock();
+			ms_sleep(10);
+			continue;
+		}
 		space = op_buffer_space();
 		if (space < 0) {
 			d_print("op_buffer_space returned %d %s\n", space,
@@ -1182,6 +1201,7 @@ void player_seek(double offset, int relative, int start_playing)
 			d_print("doing op_drop after seek\n");
 			op_drop();
 			reset_buffer();
+			seek_hold_until = now_ms() + SEEK_HOLD_MS;
 			consumer_pos = new_pos * buffer_second_size();
 			scale_pos = consumer_pos;
 			_consumer_position_update(1, new_pos);
