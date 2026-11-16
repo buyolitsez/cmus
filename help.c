@@ -120,7 +120,7 @@ static void help_add_defaults(void)
 	help_add_text("X                delete from the bucket (asks first)");
 	help_add_text("R                continue what the phone played");
 	help_add_text("O                assistant (cmus-b2-ask)");
-	help_add_text("T                add albums from a torrent or YouTube Music");
+	help_add_text("T                add albums from a torrent or YouTube Music (p listen, s stop)");
 	help_add_text("8 / 9            lyrics / torrents (a add, space seed, D remove)");
 	help_add_text("* 8 Enter        rate the selected albums 1-10");
 	help_add_text(":filter rating>=8      albums rated 8 and up (rating=-1: unrated)");
