@@ -9,6 +9,8 @@ After=network-online.target
 [Service]
 EnvironmentFile=-%h/.config/cmus-b2/slskd.env
 Environment=SLSKD_HTTP_IP_ADDRESS=127.0.0.1 SLSKD_NO_HTTPS=true SLSKD_NO_AUTH=true SLSKD_NO_LOGO=true
+# slskd serves its web UI from the working directory and scans it; $HOME would walk the bucket mount
+WorkingDirectory=%h/.local/opt/slskd
 ExecStart=%h/.local/opt/slskd/slskd
 Restart=on-failure
 RestartSec=30
