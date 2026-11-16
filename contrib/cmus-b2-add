@@ -5,7 +5,8 @@
 
 The first screen offers the newest .torrent with music in ~/Downloads (Enter) or
 takes a YouTube Music search ("artist album", or an artist's name for their
-discography) or link to an album, playlist or artist.
+discography) or link to an album, playlist or artist; p in the list of albums
+found plays an album or track with mpv before you download it.
 Shows the torrent's folders and files (or the albums found and their tracks) as a tree to mark what to download, asks
 Claude where each one goes in the music folder (next to the artist's albums if
 the artist is there, otherwise a new path in the same genre/artist/album
@@ -18,7 +19,7 @@ downloaded) or you are asked, by the cmus option added_local_copy.
 
 In cmus: ":bind common T shell footclient -N <repo>/contrib/cmus-b2-add" opens
 it in a new window. Needs python-libtorrent, python-anthropic, python-ytmusicapi, python-mutagen,
-yt-dlp and ANTHROPIC_API_KEY
+yt-dlp, mpv (to listen first) and ANTHROPIC_API_KEY
 (in the environment or as ANTHROPIC_API_KEY=... in ~/.config/cmus-b2/env).
 """
 import argparse
@@ -39,7 +40,7 @@ import urllib.request
 import anthropic
 import libtorrent as lt
 
-from cmus_b2 import REMOTE, option
+from cmus_b2 import REMOTE, cmus, option
 
 AUDIO_EXT = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".ape", ".wv", ".aac"}
 DISC_DIR = re.compile(r"^(cd|disc|disk|диск)\s*\d+\b", re.I)
@@ -199,10 +200,11 @@ class Node:
         return [self] if self.index is not None else [f for c in self.children.values() for f in c.files()]
 
 
-def pick(scr, title, files, fmt=size, ordered=False):
+def pick(scr, title, files, fmt=size, ordered=False, play=None):
     """Tree of the torrent's folders and files: arrows move and open folders, Space marks.
     Returns the indices of the marked files, or None. fmt shows the third field of files; ordered keeps
-    the order of files instead of sorting by name."""
+    the order of files instead of sorting by name. play(indices) plays files (a folder, or a file and
+    the ones after it in its folder), play([]) stops; it returns what to show in the title."""
     root = Node("")
     for i, path, n in files:
         node = root
@@ -225,6 +227,7 @@ def pick(scr, title, files, fmt=size, ordered=False):
     curses.curs_set(0)
     curses.use_default_colors()
     cur = top = 0
+    playing = ""
     while True:
         rows = list(visible(root))
         cur = max(0, min(cur, len(rows) - 1))
@@ -233,7 +236,7 @@ def pick(scr, title, files, fmt=size, ordered=False):
         top = min(max(top, cur - page + 1), cur)
         marked = [f for f in root.files() if f.marked]
         scr.erase()
-        scr.addnstr(0, 0, f"{title}   marked: {len(marked)} files, {fmt(sum(f.size for f in marked))}", w - 1, curses.A_BOLD)
+        scr.addnstr(0, 0, f"{title}   marked: {len(marked)} files, {fmt(sum(f.size for f in marked))}   {playing}", w - 1, curses.A_BOLD)
         for y, node in enumerate(rows[top:top + page], 1):
             fl = node.files()
             box = "[x]" if all(f.marked for f in fl) else "[-]" if any(f.marked for f in fl) else "[ ]"
@@ -242,7 +245,8 @@ def pick(scr, title, files, fmt=size, ordered=False):
             sz = fmt(node.size)
             text = line[:max(0, w - len(sz) - 3)].ljust(w - len(sz) - 3) + " " + sz
             scr.addnstr(y, 0, text, w - 1, curses.A_REVERSE if top + y - 1 == cur else 0)
-        scr.addnstr(h - 1, 0, "↑↓ move  → open  ← close  Space mark  a all  Enter download marked  q quit", w - 1, curses.A_DIM)
+        keys = "  p play  s stop" if play else ""
+        scr.addnstr(h - 1, 0, f"↑↓ move  → open  ← close  Space mark  a all{keys}  Enter download marked  q quit", w - 1, curses.A_DIM)
         k = scr.get_wch()
         node = rows[cur] if rows else None
         if k in (curses.KEY_UP, "k"):
@@ -272,6 +276,14 @@ def pick(scr, title, files, fmt=size, ordered=False):
             on = not all(f.marked for f in fl)
             for f in fl:
                 f.marked = on
+        elif k == "p" and play and node:
+            fl = node.files()
+            if node.index is not None:  # this file and the ones after it
+                fl = node.parent.files()
+                fl = fl[fl.index(node):]
+            playing = play([f.index for f in fl])
+        elif k == "s" and play:
+            playing = play([])
         elif k in ("\n", "\r", curses.KEY_ENTER):
             return [f.index for f in marked]
         elif k == "q":
@@ -422,6 +434,26 @@ def yt_download(al, tracks, folder):
         urllib.request.urlretrieve(re.sub(r"=w\d+-h\d+.*$", "=w1200-h1200", cover), os.path.join(folder, "cover.jpg"))
 
 
+player = None
+
+
+def preview(tracks):
+    """Plays the tracks with mpv from YouTube Music, pausing cmus; [] stops. Returns what pick shows."""
+    global player
+    if player:
+        player.terminate()
+        player = None
+    if not tracks:
+        return ""
+    if not shutil.which("mpv"):
+        return "mpv is not installed"
+    cmus("-U")
+    player = subprocess.Popen(["mpv", "--no-video", "--really-quiet", "--ytdl-format=bestaudio",
+                               *[f"https://music.youtube.com/watch?v={t['videoId']}" for t in tracks]],
+                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return f"▶ {tracks[0]['title']}" + (f" +{len(tracks) - 1}" if len(tracks) > 1 else "")
+
+
 def add_youtube(query):
     """Adds albums found by a YouTube Music search or link. Returns the plan, or None to search again."""
     print("Searching YouTube Music...")
@@ -431,7 +463,9 @@ def add_youtube(query):
     tracks = [(name, al, t) for name, al, ts in albums for t in ts]
     picked = curses.wrapper(pick, f"YouTube Music: {query}",
                             [(i, f"{name}/{track_file(t)}", t.get("duration_seconds") or 0)
-                             for i, (name, al, t) in enumerate(tracks)], duration, True)
+                             for i, (name, al, t) in enumerate(tracks)], duration, True,
+                            lambda ix: preview([tracks[i][2] for i in ix]))
+    preview([])
     if not picked:
         return None
     chosen = {}
