@@ -250,6 +250,7 @@ def pick(scr, title, files, fmt=size, ordered=False, play=None):
 
     curses.curs_set(0)
     curses.use_default_colors()
+    scr.timeout(-1)  # source() leaves its timeout on the same screen
     cur = top = 0
     playing = ""
     while True:
