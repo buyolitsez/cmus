@@ -577,30 +577,47 @@ def slsk_folders(query):
 
 
 def slsk_download(user, files, folder):
-    """Downloads a peer's files with slskd into folder at their relative paths. Returns the files that failed."""
-    tag = str(uuid.uuid4())
-    batches, failed = set(), set()
-    subdirs = {}
-    for f in files:
-        subdirs.setdefault(os.path.dirname(f["rel"]), []).append(f)
-    for sub, fs in subdirs.items():  # a batch per subfolder, as slskd saves a batch's files in one folder
-        r = slskd("transfers/downloads/batches", {
-            "username": user, "files": [{"filename": f["filename"], "size": f["size"]} for f in fs],
-            "options": {"destination": "/".join(filter(None, [tag, sub]))}})
-        batches.add(r["batch"]["id"])
-        failed |= {x["filename"] for x in r["failures"]}
-    total, done = sum(f["size"] for f in files), []
-    while len(done) + len(failed) < len(files):
+    """Downloads a peer's files with slskd into folder at their relative paths, trying a failed file
+    again twice and waiting for slskd if it restarts. Returns the files that failed."""
+    tag, batches, failed, tries = str(uuid.uuid4()), set(), set(), {}
+
+    def enqueue(fs):
+        subdirs = {}
+        for f in fs:
+            subdirs.setdefault(os.path.dirname(f["rel"]), []).append(f)
+            tries[f["filename"]] = tries.get(f["filename"], 0) + 1
+        for sub, sfs in subdirs.items():  # a batch per subfolder, as slskd saves a batch's files in one folder
+            r = slskd("transfers/downloads/batches", {
+                "username": user, "files": [{"filename": f["filename"], "size": f["size"]} for f in sfs],
+                "options": {"destination": "/".join(filter(None, [tag, sub]))}})
+            batches.add(r["batch"]["id"])
+            failed.update(x["filename"] for x in r["failures"])
+
+    enqueue(files)
+    by_name, total, ok = {f["filename"]: f for f in files}, sum(f["size"] for f in files), set()
+    while len(ok) + len(failed) < len(files):
         time.sleep(2)
-        ts = [t for d in slskd(f"transfers/downloads/{urllib.parse.quote(user, safe='')}")["directories"]
-              for t in d["files"] if t.get("batchId") in batches and t["filename"] not in failed]
-        done = [t for t in ts if t["state"].startswith("Completed")]
+        try:
+            latest = {}  # the last try of each file
+            for d in slskd(f"transfers/downloads/{urllib.parse.quote(user, safe='')}")["directories"]:
+                for t in d["files"]:
+                    if t.get("batchId") in batches and t["requestedAt"] >= latest.get(t["filename"], {}).get("requestedAt", ""):
+                        latest[t["filename"]] = t
+            ok = {n for n, t in latest.items() if t["state"] == "Completed, Succeeded"}
+            again = [by_name[n] for n, t in latest.items()
+                     if t["state"].startswith("Completed") and n not in ok and n not in failed]
+            failed.update(f["filename"] for f in again if tries[f["filename"]] >= 3)
+            if again := [f for f in again if f["filename"] not in failed]:
+                enqueue(again)
+        except OSError:  # slskd restarts
+            print("\rWaiting for slskd...   ", end="", flush=True)
+            continue
+        ts = latest.values()
         queued = sum("Queued" in t["state"] for t in ts)
         rate = sum(t["averageSpeed"] for t in ts if "InProgress" in t["state"])
-        print(f"\r{len(done) + len(failed)}/{len(files)} files  {size(sum(t['bytesTransferred'] for t in ts))} of {size(total)}"
+        print(f"\r{len(ok) + len(failed)}/{len(files)} files  {size(sum(t['bytesTransferred'] for t in ts))} of {size(total)}"
               f"  {rate / 2**20:.1f} MB/s" + (f"  queued {queued}" if queued else "") + "   ", end="", flush=True)
     print()
-    failed |= {t["filename"] for t in done if "Succeeded" not in t["state"]}
     staged = os.path.join(slskd("options")["directories"]["downloads"], tag)
     if os.path.isdir(staged):
         os.makedirs(os.path.dirname(folder), exist_ok=True)
