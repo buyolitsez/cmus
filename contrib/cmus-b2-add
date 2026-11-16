@@ -54,6 +54,7 @@ import libtorrent as lt
 from cmus_b2 import REMOTE, cmus, option, picard
 
 AUDIO_EXT = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".ape", ".wv", ".aac"}
+COVER_EXT = {".jpg", ".jpeg", ".png"}
 DISC_DIR = re.compile(r"^(cd|disc|disk|диск)\s*\d+\b", re.I)
 MODEL = "claude-sonnet-5-5"
 # folder names that say nothing about the artist, not used to find the artist's folder
@@ -584,6 +585,8 @@ def slsk_folders(query):
         paths = {f["filename"].replace("\\", "/"): f for f in r["files"]}
         albums = {album_of(p) for p in paths if os.path.splitext(p)[1].lower() in AUDIO_EXT}
         for p, f in paths.items():
+            if os.path.splitext(p)[1].lower() not in AUDIO_EXT | COVER_EXT:  # nfo, cue, exe and the like
+                continue
             d = max((d for d in albums if p.startswith(d + "/")), key=len, default=None)
             if d is not None:
                 found.setdefault((r["username"], d), (r, []))[1].append({**f, "rel": p[len(d) + 1:]})
@@ -615,8 +618,9 @@ def slsk_folders(query):
 
 def slsk_download(user, files, folder):
     """Downloads a peer's files with slskd into folder at their relative paths, trying a failed file
-    again twice and waiting for slskd if it restarts. Returns the files that failed."""
-    tag, batches, failed, tries = str(uuid.uuid4()), set(), set(), {}
+    again twice (unless the peer rejected it) and waiting for slskd if it restarts. Returns the files that failed
+    and the peer's reason for the last of them."""
+    tag, batches, failed, tries, reason = str(uuid.uuid4()), set(), set(), {}, ""
 
     def enqueue(fs):
         subdirs = {}
@@ -643,7 +647,10 @@ def slsk_download(user, files, folder):
             ok = {n for n, t in latest.items() if t["state"] == "Completed, Succeeded"}
             again = [by_name[n] for n, t in latest.items()
                      if t["state"].startswith("Completed") and n not in ok and n not in failed]
-            failed.update(f["filename"] for f in again if tries[f["filename"]] >= 3)
+            failed.update(f["filename"] for f in again
+                          if tries[f["filename"]] >= 3 or latest[f["filename"]]["state"] == "Completed, Rejected")
+            reason = next((latest[f["filename"]].get("exception") for f in again if latest[f["filename"]].get("exception")),
+                          reason)
             if again := [f for f in again if f["filename"] not in failed]:
                 enqueue(again)
         except OSError:  # slskd restarts
@@ -659,7 +666,7 @@ def slsk_download(user, files, folder):
     if os.path.isdir(staged):
         os.makedirs(os.path.dirname(folder), exist_ok=True)
         shutil.move(staged, folder)
-    return sorted(failed)
+    return sorted(failed), reason
 
 
 def add_soulseek(query):
@@ -701,6 +708,83 @@ def start_job(where, albums):
                          stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
 
 
+def looks_like(path, ext):
+    """Whether the file starts the way files with this extension do (not, say, a program renamed)."""
+    with open(path, "rb") as f:
+        h = f.read(12)
+        if ext == ".flac" and h[:3] == b"ID3":  # FLAC after an ID3 tag: skip the tag
+            f.seek(10 + sum(b << 7 * (3 - i) for i, b in enumerate(h[6:10])))
+            h = f.read(12)
+    mpeg = h[:1] == b"\xff" and len(h) > 1 and h[1] & 0xE0 == 0xE0  # MP3 and ADTS AAC frame sync
+    if ext in COVER_EXT:  # any picture will do as a cover
+        return h[:3] == b"\xff\xd8\xff" or h[:8] == b"\x89PNG\r\n\x1a\n" or h[:4] == b"RIFF" and h[8:] == b"WEBP"
+    return {".flac": h[:4] == b"fLaC", ".mp3": h[:3] == b"ID3" or mpeg,
+            ".m4a": h[4:8] == b"ftyp", ".aac": h[:3] == b"ID3" or h[:4] == b"ADIF" or mpeg,
+            ".ogg": h[:4] == b"OggS", ".opus": h[:4] == b"OggS", ".wav": h[:4] == b"RIFF" and h[8:] == b"WAVE",
+            ".ape": h[:4] == b"MAC ", ".wv": h[:4] == b"wvpk"}.get(ext, False)
+
+
+def high_band(path):
+    """How much quieter, in dB, 30 s in the middle of the track are above 19 kHz than at 11-15 kHz. An MP3 encoder
+    cuts the highs at 16-19 kHz, so a FLAC made from an MP3 has next to nothing there; a real rip has something."""
+    sec = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+                               capture_output=True, text=True).stdout or 0)
+
+    def level(filters):
+        out = subprocess.run(["nice", "ffmpeg", "-nostdin", "-hide_banner", "-ss", str(max(sec / 2 - 15, 0)), "-t", "30",
+                              "-i", path, "-af", filters + "astats=measure_perchannel=none", "-f", "null", "-"],
+                             capture_output=True, text=True).stderr
+        m = re.findall(r"RMS level dB: (-?[\d.]+|-inf)", out)
+        return float(m[-1]) if m else None
+
+    mid, high = level("highpass=f=11000," * 4 + "lowpass=f=15000," * 4), level("highpass=f=19000," * 8)
+    return None if mid is None or high is None else mid - high
+
+
+def check_album(folder, remove=True):
+    """Checks downloaded files before they go to the bucket: removes what is neither audio nor a cover, and
+    returns (problems, warnings). Problems (audio that is not what its extension says or broken FLAC) mean the
+    album should not be added; a warning is a FLAC that looks made from an MP3."""
+    problems, flacs = [], []
+    for root, _, files in os.walk(folder):
+        for name in files:
+            path = os.path.join(root, name)
+            rel, ext = os.path.relpath(path, folder), os.path.splitext(name)[1].lower()
+            if ext in AUDIO_EXT | COVER_EXT and looks_like(path, ext):
+                if ext == ".flac":
+                    flacs.append(path)
+            elif ext in AUDIO_EXT:
+                problems.append(f"{rel}: not {ext[1:].upper()} inside")
+            elif remove:
+                print(f"Removed (not audio or a cover): {rel}")
+                os.remove(path)
+            else:
+                print(f"Not audio or a cover: {rel}")
+    for n, path in enumerate(sorted(flacs), 1):
+        say(f"checking FLAC {n}/{len(flacs)}")
+        test = ["nice", "flac", "-t", "-s", path] if shutil.which("flac") else \
+            ["nice", "ffmpeg", "-nostdin", "-v", "error", "-xerror", "-i", path, "-f", "null", "-"]
+        if subprocess.run(test, capture_output=True).returncode:
+            problems.append(f"{os.path.relpath(path, folder)}: broken FLAC")
+    warnings = []
+    if flacs:
+        drop = high_band(sorted(flacs, key=os.path.getsize)[len(flacs) // 2])
+        if drop is not None and drop > 45:
+            warnings.append(f"{os.path.basename(folder)} may be an MP3 made into FLAC (nothing above 19 kHz)")
+    for p in problems:
+        print(p)
+    return problems, warnings
+
+
+def discard(folder):
+    """Removes an album that will not be added, and the folders above it that it leaves empty."""
+    shutil.rmtree(folder, ignore_errors=True)
+    folder = os.path.dirname(folder)
+    while folder.startswith(music + os.sep) and os.path.isdir(folder) and not os.listdir(folder):
+        os.rmdir(folder)
+        folder = os.path.dirname(folder)
+
+
 def run_job(d):
     """A background download: downloads the albums, then adds them one job at a time (the catalog is
     published by one at once). Soulseek albums with files that did not download are skipped."""
@@ -710,17 +794,26 @@ def run_job(d):
         f.write(str(os.getpid()))
     job = json.load(open(os.path.join(d, "job.json"), encoding="utf-8"))
     try:
-        plan, skipped = {}, []
+        plan, skipped, warnings = {}, [], []
         for x in job["albums"]:
             folder = os.path.join(music, x["target"])
             print(f"Downloading {x['target']}")
             if job["source"] == "YouTube Music":
                 yt_download(x["album"], x["tracks"], folder)
-            elif failed := slsk_download(x["user"], x["files"], folder):
-                print("\nNot downloaded:\n  " + "\n  ".join(failed))
-                shutil.rmtree(folder, ignore_errors=True)
-                skipped.append(f"{os.path.basename(x['target'])} ({len(failed)} files did not download)")
+            else:
+                failed, reason = slsk_download(x["user"], x["files"], folder)
+                if failed:
+                    print("\nNot downloaded:\n  " + "\n  ".join(failed))
+                    discard(folder)
+                    skipped.append(f"{os.path.basename(x['target'])} ({len(failed)} files did not download"
+                                   + (f": {reason}" if reason else "") + ")")
+                    continue
+            problems, warns = check_album(folder)
+            if problems:
+                discard(folder)
+                skipped.append(f"{os.path.basename(x['target'])} ({problems[0]})")
                 continue
+            warnings += warns
             plan[x["target"]] = x["target"]
         if plan:
             say("waiting for another album to be added")
@@ -728,7 +821,8 @@ def run_job(d):
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 upload(plan, job["tag"])
             remove_local(plan, job["local_copy"])
-        say("done" + (", skipped: " + ", ".join(skipped) if skipped else "") if plan else "error: skipped " + ", ".join(skipped))
+        say(("done" + (", skipped: " + ", ".join(skipped) if skipped else "") if plan else
+             "error: skipped " + ", ".join(skipped)) + "".join(f", warning: {w}" for w in warnings))
     except Exception as e:
         traceback.print_exc()
         say(f"error: {e} (log: {d}/log)")
@@ -800,6 +894,15 @@ def add_torrent(path):
             os.makedirs(dst)
             shutil.move(os.path.join(incoming, fs.file_path(0)), dst)
     shutil.rmtree(incoming)
+    # the files stay as they are: they are seeded back from the bucket
+    problems, warnings = [], []
+    for target in plan.values():
+        p, w = check_album(os.path.join(music, target), remove=False)
+        problems, warnings = problems + p, warnings + w
+    for w in warnings:
+        print("Warning:", w)
+    if problems and ask("Upload anyway? [y/N] ").lower() != "y":
+        sys.exit("Not uploaded, the files are in " + ", ".join(os.path.join(music, t) for t in plan.values()))
     upload(plan)
 
     # seeding from the bucket (contrib/cmus-b2-seed), with the files at their library paths
