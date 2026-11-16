@@ -14,7 +14,7 @@ Shows the torrent's folders and files (or the albums found and their tracks) as 
 Claude where each one goes in the music folder (next to the artist's albums if
 the artist is there, otherwise a new path in the same genre/artist/album
 layout); you answer in words or with paths until you accept. Then downloads only
-the marked files, uploads them with sync-music.sh, republishes the catalog,
+the marked files, offers to tag them in MusicBrainz Picard first, uploads them with sync-music.sh, republishes the catalog,
 refreshes the cmus library and hands the torrent to cmus-b2-seed, which seeds
 it from the bucket. YouTube Music tracks are its best stream without a
 re-encode (Opus about 130 kbit/s without Premium), tagged, with cover.jpg. The local copy is removed, kept (cmus plays it as
@@ -46,7 +46,7 @@ import urllib.request
 import anthropic
 import libtorrent as lt
 
-from cmus_b2 import REMOTE, cmus, option
+from cmus_b2 import REMOTE, cmus, option, picard
 
 AUDIO_EXT = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".ape", ".wv", ".aac"}
 DISC_DIR = re.compile(r"^(cd|disc|disk|диск)\s*\d+\b", re.I)
@@ -711,6 +711,8 @@ def add_torrent(path):
 
 
 def upload(plan):
+    if shutil.which("picard") and ask("Tag with Picard before uploading? [y/N] ").lower() == "y":
+        picard([os.path.join(music, t) for t in plan.values()])
     print("Uploading to the bucket...")
     subprocess.run([os.path.join(tools, "sync-music.sh"), "--", *plan.values()], check=True)
     print("Publishing the catalog...")

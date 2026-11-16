@@ -68,3 +68,9 @@ def cue_files(cue):
     with open(cue, encoding="utf-8", errors="replace") as f:
         names = re.findall(r'^\s*FILE\s+"(.+?)"', f.read(), re.M)
     return [os.path.join(os.path.dirname(cue), n) for n in names] + [cue]
+
+
+def picard(paths):
+    """Open paths (files or folders) in a new MusicBrainz Picard window and wait until it is closed."""
+    print("Picard is open: save the tags there (Ctrl+S) and close it to go on.")
+    subprocess.run(["picard", "--stand-alone-instance", *paths], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

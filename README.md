@@ -149,6 +149,13 @@ are downloaded, uploaded with `sync-music.sh`, the catalog is republished and th
 `python-ytmusicapi`, `python-mutagen`, `yt-dlp` and `mpv` to listen first. Its tracks are the best stream YouTube gives without Premium (Opus
 about 130 kbit/s), kept as is, tagged from the album, with `cover.jpg`; no lossless.
 
+Tagging with MusicBrainz Picard: `:bind common K run footclient -N <repo>/contrib/cmus-b2-tag` opens the selected
+track, album or artist in a Picard window of its own. The files are tagged at their path in `~/Music`, copied there from
+the bucket first if needed; once Picard is closed the changed files are uploaded, the catalog republished and the cmus
+library refreshed, and the copies made only for tagging removed. Keep renaming and moving files off in Picard's options.
+CUE images are left out. `cmus-b2-add` also offers Picard before it uploads the new albums (a torrent's tagged files are
+then not seeded).
+
 Seeding: `contrib/cmus-b2-seed.service` (edit the path, then `systemctl --user enable --now cmus-b2-seed`) seeds the
 added torrents from the bucket mount, with the files at their library paths and nothing downloaded; files whose tags
 were changed later are just not seeded. View 9 lists the torrents (`:set torrents_program=<repo>/contrib/cmus-b2-seed`
