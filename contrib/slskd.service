@@ -17,7 +17,9 @@ EnvironmentFile=-%h/.local/share/cmus-b2/seed/slskd-limit.env
 Environment=SLSKD_HTTP_IP_ADDRESS=127.0.0.1 SLSKD_NO_HTTPS=true SLSKD_NO_AUTH=true SLSKD_NO_LOGO=true
 Environment=SLSKD_SHARED_DIR=[Music]%h/.cache/b2music-slsk SLSKD_UPLOAD_SLOTS=3 SLSKD_UPLOAD_SPEED_LIMIT=2048
 Environment=SLSKD_SHARE_CACHE_WORKERS=8 SLSKD_SHARE_CACHE_RETENTION=43200
-Environment="SLSKD_SHARE_FILTER=^(?!.*\\.(flac|mp3|m4a|ogg|opus|wav|ape|wv|aac|jpe?g|png)$)"
+# leaves out files that are not audio or covers by name: slskd matches the filter against folder paths
+# too, so "anything but these extensions" would leave out every folder
+Environment="SLSKD_SHARE_FILTER=(?i)\\.(sh|py|exe|bat|cmd|ps1|js|vbs|dll|msi|lnk|scr|zip|rar|7z|txt|log|nfo|cue|m3u8?|lrc|sfv|md5|accurip|pdf|db|ini|ds_store|json|tsv|torrent|part)$"
 # slskd serves its web UI from the working directory and scans it; $HOME would walk the bucket mount
 WorkingDirectory=%h/.local/opt/slskd
 ExecStart=%h/.local/opt/slskd/slskd
