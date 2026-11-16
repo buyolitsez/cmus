@@ -26,6 +26,7 @@
 #include "utils.h"
 #include "u_collate.h"
 #include "ui_curses.h" /* cur_view */
+#include "player.h"
 
 #include <pthread.h>
 #include <string.h>
@@ -102,6 +103,10 @@ static void views_add_track(struct track_info *ti)
 	tree_add_track(track, album_shuffle_list_add);
 	shuffle_add(track);
 	editable_add(&lib_editable, (struct simple_track *)track);
+
+	/* the library was reloaded while this track plays: keep playing its album */
+	if (!lib_cur_track && player_info.ti && strcmp(player_info.ti->filename, ti->filename) == 0)
+		lib_cur_track = track;
 }
 
 struct fh_entry {
