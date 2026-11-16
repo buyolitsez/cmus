@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Add albums from a .torrent or YouTube Music to the music library and the B2 bucket.
+"""Add albums from a .torrent, YouTube Music or Soulseek to the music library and the B2 bucket.
 
   cmus-b2-add [file.torrent]    # without a torrent asks for the source first
 
 The first screen offers the newest .torrent with music in ~/Downloads (Enter) or
 takes a YouTube Music search ("artist album", or an artist's name for their
 discography) or link to an album, playlist or artist; p in the list of albums
-found plays an album or track with mpv before you download it.
+found plays an album or track with mpv before you download it. Tab switches the
+search to Soulseek (through slskd, contrib/slskd.service): the folders found,
+FLAC first, then the peers with a free slot; the first time it asks for the
+Soulseek account and keeps it in ~/.config/cmus-b2/slskd.env.
 Shows the torrent's folders and files (or the albums found and their tracks) as a tree to mark what to download, asks
 Claude where each one goes in the music folder (next to the artist's albums if
 the artist is there, otherwise a new path in the same genre/artist/album
@@ -25,6 +28,7 @@ yt-dlp, mpv (to listen first) and ANTHROPIC_API_KEY
 import argparse
 import concurrent.futures
 import curses
+import getpass
 import glob
 import gzip
 import json
@@ -34,7 +38,9 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
+import uuid
 import urllib.request
 
 import anthropic
@@ -58,6 +64,7 @@ a = p.parse_args()
 music = os.path.expanduser(a.music)
 tools = os.path.expanduser(a.tools)
 cache = os.path.expanduser("~/.cache/cmus-b2")
+SLSKD = "http://127.0.0.1:5030/api/v0/"
 os.environ.setdefault("ESCDELAY", "25")  # Esc quits at once
 
 
@@ -327,9 +334,9 @@ def newest_music_torrent():
     return None
 
 
-def source(scr, torrent, error):
-    """First screen: Enter takes the torrent, or type a YouTube Music search or link. Returns the text
-    typed ("" for the torrent), or None to quit."""
+def source(scr, torrent, error, where):
+    """First screen: Enter takes the torrent, or type a search or link; Tab switches the search between
+    YouTube Music and Soulseek. Returns where to search and the text typed ("" for the torrent), or None to quit."""
     curses.use_default_colors()
     text = ""
     while True:
@@ -338,10 +345,11 @@ def source(scr, torrent, error):
         scr.addnstr(0, 0, "Add music", w - 1, curses.A_BOLD)
         scr.addnstr(2, 0, f"Enter: torrent {os.path.basename(torrent)}" if torrent else "No .torrent with music in ~/Downloads",
                     w - 1, 0 if torrent else curses.A_DIM)
-        scr.addnstr(4, 0, 'YouTube Music: an artist, "artist album" or a link', w - 1)
+        hint = 'an artist, "artist album" or a link' if where == "YouTube Music" else '"artist album"'
+        scr.addnstr(4, 0, f"{where}: {hint}", w - 1)
         if error:
             scr.addnstr(7, 0, error, w - 1, curses.A_DIM)
-        scr.addnstr(h - 1, 0, "Enter search (the torrent if empty)  Esc quit", w - 1, curses.A_DIM)
+        scr.addnstr(h - 1, 0, "Enter search (the torrent if empty)  Tab YouTube Music / Soulseek  Esc quit", w - 1, curses.A_DIM)
         scr.addnstr(5, 0, "> " + text[-(w - 4):], w - 1)
         curses.curs_set(1)
         k = scr.get_wch()
@@ -349,7 +357,9 @@ def source(scr, torrent, error):
             return None
         elif k in ("\n", "\r", curses.KEY_ENTER):
             if text.strip() or torrent:
-                return text.strip()
+                return where, text.strip()
+        elif k == "\t":
+            where = "Soulseek" if where == "YouTube Music" else "YouTube Music"
         elif k in (curses.KEY_BACKSPACE, "\x7f", "\b"):
             text = text[:-1]
         elif k == "\x15":  # Ctrl+U
@@ -481,6 +491,150 @@ def add_youtube(query):
     return plan
 
 
+def slskd(path, body=None):
+    """A call to the slskd API (contrib/slskd.service: local only, without authentication)."""
+    req = urllib.request.Request(SLSKD + path, json.dumps(body).encode() if body is not None else None,
+                                 {"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = r.read()
+    except urllib.error.HTTPError as e:  # slskd says why: the peer is offline and the like
+        raise RuntimeError(f"slskd: {e.read().decode(errors='replace') or e}") from None
+    return json.loads(data) if data else None
+
+
+def slsk_login():
+    """Starts slskd and waits until it is logged in to Soulseek. The first time asks for the account
+    (Soulseek makes a new one for a free name) and keeps it in ~/.config/cmus-b2/slskd.env for slskd.service."""
+    env = os.path.expanduser("~/.config/cmus-b2/slskd.env")
+    while True:
+        if not os.path.exists(env):
+            print("Soulseek account (a name nobody has yet makes a new account)")
+            name, password = ask("Name: "), getpass.getpass("Password: ")
+            os.makedirs(os.path.dirname(env), exist_ok=True)
+            quote = lambda v: '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+            with os.fdopen(os.open(env, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+                f.write(f"SLSKD_SLSK_USERNAME={quote(name)}\nSLSKD_SLSK_PASSWORD={quote(password)}\n")
+            subprocess.run(["systemctl", "--user", "restart", "slskd"], check=True)
+        else:
+            subprocess.run(["systemctl", "--user", "start", "slskd"], check=True)
+        print("Connecting to Soulseek...")
+        for _ in range(60):
+            try:
+                if slskd("server")["isLoggedIn"]:
+                    return
+            except OSError:  # slskd is starting
+                pass
+            time.sleep(1)
+        if ask("Not logged in to Soulseek (journalctl --user -u slskd says why). Enter the account again? [y/N] ").lower() != "y":
+            raise ValueError("Not logged in to Soulseek")
+        os.remove(env)
+
+
+def slsk_folders(query):
+    """Folders with audio found on Soulseek: [(name, user, folder, files)], FLAC first, then the peers
+    with a free upload slot, a short queue and fast uploads. A folder is an album folder (CD1/Disc 2
+    stay inside it) and files are slskd's search results with their path relative to it."""
+    slsk_login()
+    s = slskd("searches", {"searchText": query})
+    while not s["isComplete"]:
+        print(f"\rSearching Soulseek: {s['responseCount']} users, {s['fileCount']} files   ", end="", flush=True)
+        time.sleep(1)
+        s = slskd(f"searches/{s['id']}")
+    print()
+    found = {}
+    for r in slskd(f"searches/{s['id']}/responses"):
+        paths = {f["filename"].replace("\\", "/"): f for f in r["files"]}
+        albums = {album_of(p) for p in paths if os.path.splitext(p)[1].lower() in AUDIO_EXT}
+        for p, f in paths.items():
+            d = max((d for d in albums if p.startswith(d + "/")), key=len, default=None)
+            if d is not None:
+                found.setdefault((r["username"], d), (r, []))[1].append({**f, "rel": p[len(d) + 1:]})
+    urllib.request.urlopen(urllib.request.Request(SLSKD + f"searches/{s['id']}", method="DELETE"), timeout=30)
+
+    def rank(x):
+        r, files = x
+        exts = {os.path.splitext(f["rel"])[1].lower() for f in files} & AUDIO_EXT
+        return exts != {".flac"}, not r["hasFreeUploadSlot"], r["queueLength"], -r["uploadSpeed"]
+
+    out, names = [], set()
+    for (user, d), (r, files) in sorted(found.items(), key=lambda x: rank(x[1]))[:100]:
+        audio = [f for f in files if os.path.splitext(f["rel"])[1].lower() in AUDIO_EXT]
+        kind = "+".join(sorted({os.path.splitext(f["rel"])[1][1:].upper() for f in audio}))
+        f = audio[0]
+        if f.get("bitDepth") and f.get("sampleRate"):
+            kind += f" {f['bitDepth']}/{f['sampleRate'] / 1000:g}"
+        elif f.get("bitRate"):
+            kind += f" {f['bitRate']}k"
+        slot = "" if r["hasFreeUploadSlot"] else f", queue {r['queueLength']}"
+        base = name = f"{kind}  {' ∕ '.join(d.split('/')[-2:])}  ({user}{slot})".replace("/", "∕")
+        n = 2
+        while name in names:
+            name, n = f"{base} [{n}]", n + 1
+        names.add(name)
+        out.append((name, user, d, sorted(files, key=lambda f: f["rel"])))
+    return out
+
+
+def slsk_download(user, files, folder):
+    """Downloads a peer's files with slskd into folder at their relative paths. Returns the files that failed."""
+    tag = str(uuid.uuid4())
+    batches, failed = set(), set()
+    subdirs = {}
+    for f in files:
+        subdirs.setdefault(os.path.dirname(f["rel"]), []).append(f)
+    for sub, fs in subdirs.items():  # a batch per subfolder, as slskd saves a batch's files in one folder
+        r = slskd("transfers/downloads/batches", {
+            "username": user, "files": [{"filename": f["filename"], "size": f["size"]} for f in fs],
+            "options": {"destination": "/".join(filter(None, [tag, sub]))}})
+        batches.add(r["batch"]["id"])
+        failed |= {x["filename"] for x in r["failures"]}
+    total, done = sum(f["size"] for f in files), []
+    while len(done) + len(failed) < len(files):
+        time.sleep(2)
+        ts = [t for d in slskd(f"transfers/downloads/{urllib.parse.quote(user, safe='')}")["directories"]
+              for t in d["files"] if t.get("batchId") in batches and t["filename"] not in failed]
+        done = [t for t in ts if t["state"].startswith("Completed")]
+        queued = sum("Queued" in t["state"] for t in ts)
+        rate = sum(t["averageSpeed"] for t in ts if "InProgress" in t["state"])
+        print(f"\r{len(done) + len(failed)}/{len(files)} files  {size(sum(t['bytesTransferred'] for t in ts))} of {size(total)}"
+              f"  {rate / 2**20:.1f} MB/s" + (f"  queued {queued}" if queued else "") + "   ", end="", flush=True)
+    print()
+    failed |= {t["filename"] for t in done if "Succeeded" not in t["state"]}
+    staged = os.path.join(slskd("options")["directories"]["downloads"], tag)
+    if os.path.isdir(staged):
+        os.makedirs(os.path.dirname(folder), exist_ok=True)
+        shutil.move(staged, folder)
+    return sorted(failed)
+
+
+def add_soulseek(query):
+    """Adds albums found on Soulseek. Returns the plan, or None to search again."""
+    folders = slsk_folders(query)
+    if not folders:
+        raise ValueError(f"Nothing found on Soulseek for {query}")
+    files = [(name, user, f) for name, user, d, fs in folders for f in fs]
+    picked = curses.wrapper(pick, f"Soulseek: {query}",
+                            [(i, f"{name}/{f['rel']}", f["size"]) for i, (name, _, f) in enumerate(files)], size, True)
+    if not picked:
+        return None
+    chosen = {}
+    for i in picked:
+        chosen.setdefault(files[i][0], []).append(files[i])
+    plan = plan_albums("Soulseek", {name: [f["rel"] for _, _, f in fs] for name, fs in chosen.items()})
+    for name, target in list(plan.items()):
+        print(f"Downloading {name}")
+        failed = slsk_download(chosen[name][0][1], [f for _, _, f in chosen[name]], os.path.join(music, target))
+        if failed:
+            print("Not downloaded:\n  " + "\n  ".join(failed))
+            if len(failed) == len(chosen[name]) or ask(f"Add {target} without them? [y/N] ").lower() != "y":
+                del plan[name]
+                shutil.rmtree(os.path.join(music, target), ignore_errors=True)
+    if plan:
+        upload(plan)
+    return plan
+
+
 def add_torrent(path):
     info = lt.torrent_info(path)
     fs = info.layout()
@@ -557,16 +711,17 @@ def main():
     if a.torrent:
         plan = add_torrent(a.torrent)
     else:
-        torrent, error = newest_music_torrent(), ""
+        torrent, error, where = newest_music_torrent(), "", "YouTube Music"
         while True:
-            query = curses.wrapper(source, torrent, error)
-            if query is None:
+            answer = curses.wrapper(source, torrent, error, where)
+            if answer is None:
                 return
+            where, query = answer
             if not query:
                 plan = add_torrent(torrent)
                 break
             try:
-                plan = add_youtube(query)
+                plan = add_youtube(query) if where == "YouTube Music" else add_soulseek(query)
             except ValueError as e:  # nothing found: say so and ask again
                 plan, error = None, str(e)
             if plan is not None:

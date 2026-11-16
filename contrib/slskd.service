@@ -1,0 +1,17 @@
+# Soulseek client for the Soulseek search of contrib/cmus-b2-add, its web UI and API only on 127.0.0.1:5030.
+# Install slskd (a linux-x64 release from github.com/slskd/slskd unpacked into ~/.local/opt/slskd), then
+#   cp slskd.service ~/.config/systemd/user/ && systemctl --user enable --now slskd
+# cmus-b2-add asks for the Soulseek account the first time and keeps it in ~/.config/cmus-b2/slskd.env.
+[Unit]
+Description=Soulseek client (slskd) for cmus-b2-add
+After=network-online.target
+
+[Service]
+EnvironmentFile=-%h/.config/cmus-b2/slskd.env
+Environment=SLSKD_HTTP_IP_ADDRESS=127.0.0.1 SLSKD_NO_HTTPS=true SLSKD_NO_AUTH=true SLSKD_NO_LOGO=true
+ExecStart=%h/.local/opt/slskd/slskd
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
