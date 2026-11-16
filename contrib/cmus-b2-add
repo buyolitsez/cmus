@@ -129,6 +129,15 @@ def library_listing(names):
     return "\n".join(sorted(shown | {d for v in samples.values() for d in v}))
 
 
+def log_usage(u):
+    """Token counts in the assistant's log (as cmus-b2-ask writes them), to count what Claude costs."""
+    os.makedirs(cache, exist_ok=True)
+    with open(os.path.join(cache, "assistant.log"), "a") as f:
+        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} cmus-b2-add tokens: in {u.input_tokens}, "
+                f"cache read {u.cache_read_input_tokens or 0}, cache write {u.cache_creation_input_tokens or 0}, "
+                f"out {u.output_tokens}\n")
+
+
 def load_env():
     env = os.path.expanduser("~/.config/cmus-b2/env")
     if os.path.exists(env):
@@ -187,6 +196,7 @@ then answer with the whole plan again."""
             model=MODEL, max_tokens=8000, messages=messages,
             output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
             betas=["server-side-fallback-2026-07-01"], fallbacks="default")
+        log_usage(r.usage)
         if r.stop_reason != "end_turn":
             sys.exit(f"Claude did not answer ({r.stop_reason})")
         answer = json.loads(next(b.text for b in r.content if b.type == "text"))["albums"]
