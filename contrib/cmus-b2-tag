@@ -83,8 +83,9 @@ def cleanup():
         if os.path.exists(os.path.join(music, x)):
             os.remove(os.path.join(music, x))
     for d in dirs:
+        d = os.path.join(music, d)
         try:  # the artist and genre folders, if they are empty now
-            os.removedirs(os.path.join(music, d))
+            os.removedirs(d if os.path.isdir(d) else os.path.dirname(d))
         except OSError:
             pass
 
