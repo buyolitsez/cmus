@@ -1,14 +1,23 @@
 # Soulseek client for the Soulseek search of contrib/cmus-b2-add, its web UI and API only on 127.0.0.1:5030.
+# Shares the audio files and covers of the bucket through rclone-b2music-slsk.service, at most 3 uploads and
+# 2 MB/s in all; cmus-b2-seed counts what it sends to the monthly limit of seeding and slows it to 1 KB/s at
+# the limit. The shares are scanned again every 30 days, about an hour; slskd is offline while it starts with
+# no scan saved yet (the first time).
 # Install slskd (a linux-x64 release from github.com/slskd/slskd unpacked into ~/.local/opt/slskd), then
 #   cp slskd.service ~/.config/systemd/user/ && systemctl --user enable --now slskd
 # cmus-b2-add asks for the Soulseek account the first time and keeps it in ~/.config/cmus-b2/slskd.env.
 [Unit]
 Description=Soulseek client (slskd) for cmus-b2-add
-After=network-online.target
+Requires=rclone-b2music-slsk.service
+After=network-online.target rclone-b2music-slsk.service
 
 [Service]
 EnvironmentFile=-%h/.config/cmus-b2/slskd.env
+EnvironmentFile=-%h/.local/share/cmus-b2/seed/slskd-limit.env
 Environment=SLSKD_HTTP_IP_ADDRESS=127.0.0.1 SLSKD_NO_HTTPS=true SLSKD_NO_AUTH=true SLSKD_NO_LOGO=true
+Environment=SLSKD_SHARED_DIR=[Music]%h/.cache/b2music-slsk SLSKD_UPLOAD_SLOTS=3 SLSKD_UPLOAD_SPEED_LIMIT=2048
+Environment=SLSKD_SHARE_CACHE_WORKERS=8 SLSKD_SHARE_CACHE_RETENTION=43200
+Environment="SLSKD_SHARE_FILTER=^(?!.*\\.(flac|mp3|m4a|ogg|opus|wav|ape|wv|aac|jpe?g|png)$)"
 # slskd serves its web UI from the working directory and scans it; $HOME would walk the bucket mount
 WorkingDirectory=%h/.local/opt/slskd
 ExecStart=%h/.local/opt/slskd/slskd

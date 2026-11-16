@@ -18,6 +18,10 @@ from the mount's cache). SEED_LIMIT_GB in ~/.config/cmus-b2/env (default 100)
 caps a calendar month: cmus shows a warning at 80%, seeding pauses at 100%
 until the next month. B2 gives free downloads up to three times the stored
 size a month.
+
+Soulseek uploads of slskd (contrib/slskd.service), which shares the bucket too,
+count to the same limit and have a line in the status; at the limit slskd is
+restarted with uploads slowed to 1 KB/s (searches and downloads still work).
 """
 import gzip
 import json
@@ -26,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.request
 
 import libtorrent as lt
 
@@ -35,6 +40,8 @@ STATS = os.path.join(DATA, "stats.json")  # written by the service
 MOUNT = os.path.expanduser("~/b2music")
 CATALOG = os.path.expanduser("~/.cache/cmus-b2/catalog.json.gz")
 PORT = 6891
+SLSKD = "http://127.0.0.1:5030/api/v0/"
+SLSKD_LIMIT = os.path.join(DATA, "slskd-limit.env")  # read by slskd.service
 GB = 2**30
 
 
@@ -72,6 +79,48 @@ def catalog_mtimes():
             return {t["path"]: t.get("mtime") for al in json.load(f)["albums"] for t in al["tracks"]}
     except FileNotFoundError:
         return {}
+
+
+def slskd(path):
+    with urllib.request.urlopen(SLSKD + path, timeout=5) as r:
+        return json.load(r)
+
+
+def soulseek(stats):
+    """Updates stats["soulseek"] from slskd: the bytes each upload sent since the last look are added
+    to the counters, uploads slskd no longer lists are forgotten."""
+    s = stats.setdefault("soulseek", {"sent_total": 0, "sent_month": 0, "seen": {}})
+    try:
+        app = slskd("application")
+        uploads = [t for u in slskd("transfers/uploads") for d in u["directories"] for t in d["files"]]
+    except OSError:
+        s.update(state="slskd not running", rate=0, peers=0)
+        return
+    seen = {}
+    for t in uploads:
+        seen[t["id"]] = t["bytesTransferred"]
+        delta = max(0, t["bytesTransferred"] - s["seen"].get(t["id"], 0))
+        s["sent_total"] += delta
+        s["sent_month"] += delta
+        stats["month_sent"] += delta
+    s["seen"] = seen
+    active = [t for t in uploads if "InProgress" in t["state"]]
+    sh = app["shares"]
+    s.update(rate=sum(t["averageSpeed"] for t in active), peers=len({t["username"] for t in active}),
+             state=("logged in" if app["server"]["isLoggedIn"] else "not logged in") +
+             (f", scanning {sh['scanProgress'] * 100:.0f}%" if sh["scanning"] else f", shares {sh['files']} files"))
+
+
+def slskd_limit(on):
+    """Slows the uploads of slskd to 1 KB/s (on) or back, restarting it if that changes."""
+    if on == os.path.exists(SLSKD_LIMIT):
+        return
+    if on:
+        with open(SLSKD_LIMIT, "w") as f:
+            f.write("SLSKD_UPLOAD_SPEED_LIMIT=1\n")
+    else:
+        os.remove(SLSKD_LIMIT)
+    subprocess.run(["systemctl", "--user", "try-restart", "slskd"], capture_output=True)
 
 
 def cmus_echo(msg):
@@ -146,6 +195,10 @@ def status(_=""):
         print(f"{h}\t{line}")
     if not torrents:
         print("\tNo torrents yet: a adds one")
+    if "soulseek" in stats:
+        s = stats["soulseek"] if running else {}
+        print(f"\tSoulseek  ·  {s.get('state', 'stopped')}  ·  ↑ {s.get('rate', 0) / 1024:.0f} KB/s"
+              f"  ·  peers {s.get('peers', 0)}  ·  month {size(s.get('sent_month', 0))}  ·  total {size(s.get('sent_total', 0))}")
 
 
 # service
@@ -186,9 +239,10 @@ def run():
         month = time.strftime("%Y-%m")
         if stats.get("month") != month:  # a new month: counters and the limit start over
             stats.update(month=month, month_sent=0, paused_by_limit=False, warned=False)
-            for s in stats["torrents"].values():
+            for s in [*stats["torrents"].values(), stats.get("soulseek", {})]:
                 s["sent_month"] = 0
             cfg_mtime = None
+            slskd_limit(False)
         stats["limit"] = limit_bytes()
 
         try:
@@ -254,11 +308,13 @@ def run():
             s.update(rate=st.upload_payload_rate, peers=st.num_peers, state=state)
         for h in set(stats["torrents"]) - set(handles):
             del stats["torrents"][h]
+        soulseek(stats)
 
         if stats["month_sent"] >= stats["limit"] and not stats["paused_by_limit"]:
             stats["paused_by_limit"] = True
             for handle in handles.values():
                 handle.pause()
+            slskd_limit(True)
             cmus_echo(f"Seeding paused: {size(stats['month_sent'])} sent this month, the limit is {size(stats['limit'])}")
         elif stats["month_sent"] >= 0.8 * stats["limit"] and not stats.get("warned"):
             stats["warned"] = True

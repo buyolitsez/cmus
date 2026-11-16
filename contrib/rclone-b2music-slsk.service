@@ -1,0 +1,21 @@
+# Mounts music/ of the b2-player bucket for slskd (contrib/slskd.service) without a cache and with small
+# reads: slskd reads the tags of every file it shares, and through rclone-b2music.service each file
+# pulls ~11 MB from B2, here ~0.2 MB. Listings are kept an hour, so slskd's monthly re-scan sees new albums.
+# Install: cp rclone-b2music-slsk.service ~/.config/systemd/user/ &&
+#          systemctl --user enable --now rclone-b2music-slsk
+[Unit]
+Description=rclone mount of the music bucket for slskd
+After=network-online.target
+
+[Service]
+Type=notify
+ExecStartPre=-/usr/bin/fusermount3 -uz %h/.cache/b2music-slsk
+ExecStartPre=/usr/bin/mkdir -p %h/.cache/b2music-slsk
+ExecStart=/usr/bin/rclone mount b2music:buyolitsez-music/music %h/.cache/b2music-slsk \
+	--read-only --vfs-cache-mode off --buffer-size 0 \
+	--vfs-read-chunk-size 256k --vfs-read-chunk-size-limit 256k --dir-cache-time 1h --poll-interval 0
+ExecStop=/usr/bin/fusermount3 -u %h/.cache/b2music-slsk
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

@@ -141,7 +141,9 @@ in the torrents view) opens a window where Enter takes the newest `.torrent` wit
 YouTube Music search (an artist's exact name gives their discography) or paste a link to an album, playlist or artist.
 Tab switches the search to Soulseek, through `slskd` (`contrib/slskd.service`, local only): it shows the folders found,
 FLAC first, then the peers with a free upload slot; the first search asks for the Soulseek account (a free name makes a
-new one) and keeps it in `~/.config/cmus-b2/slskd.env`. Nothing is shared back.
+new one) and keeps it in `~/.config/cmus-b2/slskd.env`. slskd shares the audio files and covers of the bucket through
+its own mount without a cache (`contrib/rclone-b2music-slsk.service`; 3 uploads, 2 MB/s, re-scanned monthly); the
+torrents view shows what it sent, and it counts to the monthly limit of seeding.
 The torrent's files, or the albums or folders found with their tracks, are shown as a tree (Space marks folders or files; for YouTube Music `p` plays the album, or the track and the rest of its album, with `mpv` before downloading, pausing cmus, and `s` stops). Claude suggests where each album goes in `~/Music` and changes the plan by what you write ("this is art pop", a path) until you accept it, then the marked files
 are downloaded, uploaded with `sync-music.sh`, the catalog is republished and the cmus library refreshed.
 `set added_local_copy=ask` (default), `delete` or `keep` decides what happens to the local copy. Needs
