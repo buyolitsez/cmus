@@ -89,7 +89,7 @@ def say(text):
         with open(job_status + ".tmp", "w", encoding="utf-8") as f:
             f.write(text.strip())
         os.replace(job_status + ".tmp", job_status)
-    print(f"\r{text}   ", end="", flush=True)
+    print(f"\r\x1b[K{text}", end="", flush=True)  # clears what a longer line left
 
 
 def size(n):
