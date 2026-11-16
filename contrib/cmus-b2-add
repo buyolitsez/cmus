@@ -519,13 +519,21 @@ def slsk_login():
         else:
             subprocess.run(["systemctl", "--user", "start", "slskd"], check=True)
         print("Connecting to Soulseek...")
-        for _ in range(60):
+        waited = 0
+        while waited < 60:
             try:
-                if slskd("server")["isLoggedIn"]:
+                app = slskd("application")
+                if app["server"]["isLoggedIn"]:
+                    print()
                     return
+                if app["shares"]["scanning"]:  # slskd connects after the scan it starts with, up to an hour
+                    print(f"\rslskd is scanning the shared music: {app['shares']['scanProgress'] * 100:.0f}%   ", end="", flush=True)
+                    time.sleep(5)
+                    continue
             except OSError:  # slskd is starting
                 pass
             time.sleep(1)
+            waited += 1
         if ask("Not logged in to Soulseek (journalctl --user -u slskd says why). Enter the account again? [y/N] ").lower() != "y":
             raise ValueError("Not logged in to Soulseek")
         os.remove(env)
