@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 
-from cmus_b2 import OUT, REMOTE, cue_files, option
+from cmus_b2 import OUT, REMOTE, cue_files, option, size
 
 p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 p.add_argument("files", nargs="+", help="files of the selected tracks, as cmus passes them")
@@ -59,8 +59,8 @@ for al in affected:
     whole = "" if n == len(al["tracks"]) else f" ({n} of {len(al['tracks'])} tracks)"
     print(f"  {al['artist']} - {al['title']}{whole}")
 gone = [t for al in affected for t in al["tracks"] if t["path"] in paths]
-size = sum(t.get("size", 0) for t in {t["path"]: t for t in gone}.values())
-if input(f"Delete {len(gone)} tracks, {size / 2**30:.1f} GB? They can be restored for 30 days. [y/N] ").strip().lower() != "y":
+total = sum(t.get("size", 0) for t in {t["path"]: t for t in gone}.values())
+if input(f"Delete {len(gone)} tracks, {size(total)}? They can be restored for 30 days. [y/N] ").strip().lower() != "y":
     sys.exit(0)
 
 for al in catalog["albums"]:

@@ -51,7 +51,7 @@ import urllib.request
 import anthropic
 import libtorrent as lt
 
-from cmus_b2 import REMOTE, cmus, option, picard
+from cmus_b2 import REMOTE, cmus, option, picard, size
 
 AUDIO_EXT = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".ape", ".wv", ".aac"}
 COVER_EXT = {".jpg", ".jpeg", ".png"}
@@ -91,10 +91,6 @@ def say(text):
             f.write(text.strip())
         os.replace(job_status + ".tmp", job_status)
     print(f"\r\x1b[K{text}", end="", flush=True)  # clears what a longer line left
-
-
-def size(n):
-    return f"{n / 2**30:.1f} GB" if n >= 2**30 else f"{n / 2**20:.0f} MB"
 
 
 def album_of(path):
