@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 
-from cmus_b2 import OUT, REMOTE, cue_files, option, size
+from cmus_b2 import OUT, REMOTE, cue_files, option, size, trash
 
 p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 p.add_argument("files", nargs="+", help="files of the selected tracks, as cmus passes them")
@@ -79,6 +79,10 @@ with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt") as lst:
     lst.flush()
     # on B2 this hides the files: the lifecycle rule removes them later
     rclone("delete", f"{a.remote}/music", "--files-from-raw", lst.name)
+if os.environ.get("CMUS_B2_MIRROR") == "1":
+    # listed as the phone lists its deletes, so that arch trashes the copies in its music source
+    r = subprocess.run(["rclone", "cat", f"{a.remote}/state/deleted.tsv"], capture_output=True, text=True)
+    rclone("rcat", f"{a.remote}/state/deleted.tsv", input=(r.stdout if r.returncode == 0 else "") + "".join(f"{p}\n" for p in sorted(hide)))
 with gzip.open(catalog_file, "wt", encoding="utf-8") as f:
     json.dump(catalog, f, ensure_ascii=False, separators=(",", ":"))
 rclone("copyto", catalog_file, f"{a.remote}/catalog.json.gz")
@@ -88,7 +92,7 @@ if local:
     for path in hide:
         copy = os.path.join(local, path)
         if os.path.exists(copy):
-            subprocess.run(["gio", "trash", copy], check=True)
+            trash(copy)
             trashed += 1
         d = os.path.dirname(copy)
         while d.startswith(local + "/") and os.path.isdir(d) and not os.listdir(d):

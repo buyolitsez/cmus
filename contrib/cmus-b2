@@ -24,6 +24,8 @@ import os
 import subprocess
 import sys
 
+from cmus_b2 import trash
+
 p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 p.add_argument("--remote", default="b2music:buyolitsez-music", help="rclone path of the bucket")
 p.add_argument("--mount", default="~/b2music", help="where music/ of the bucket is mounted")
@@ -69,14 +71,16 @@ def deleted():
     return r.stdout if r.returncode == 0 else ""
 
 
-# the phone deletes from the bucket and the catalog and lists the paths here; their local copies go to the trash
-listed = "" if a.likes else deleted()
+# the phone deletes from the bucket and the catalog and lists the paths here; their local copies go to the trash.
+# Only on the machine with the music source: a mirror (CMUS_B2_MIRROR=1, the Mac) that dropped the list
+# first would keep the source's copies, and sync-music.sh would upload them again.
+listed = "" if a.likes or os.environ.get("CMUS_B2_MIRROR") == "1" else deleted()
 if listed:
     music = os.path.expanduser(a.music)
     for path in listed.splitlines():
         copy = os.path.join(music, path)
         if path and os.path.exists(copy):
-            subprocess.run(["gio", "trash", copy], check=True)
+            trash(copy)
             print("trashed", copy)
         d = os.path.dirname(copy)
         while d.startswith(music + "/") and os.path.isdir(d) and not os.listdir(d):

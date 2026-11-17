@@ -4,5 +4,6 @@
 # the app, installed from a b2-player checkout with
 #   ./gradlew --configure-on-demand :cli:installDist && rm -rf ~/.local/opt/cmus-b2-ask && cp -r cli/build/install/cmus-b2-ask ~/.local/opt/
 # Arguments are sent as the first message. Bind it with ":bind common O shell footclient -N <repo>/contrib/cmus-b2-ask".
-export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk}"
+[ -n "$JAVA_HOME" ] || JAVA_HOME=$(/usr/libexec/java_home -v 21 2>/dev/null || echo /usr/lib/jvm/java-21-openjdk)
+export JAVA_HOME
 exec ~/.local/opt/cmus-b2-ask/bin/cmus-b2-ask "$@"
