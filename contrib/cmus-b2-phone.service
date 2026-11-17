@@ -1,0 +1,19 @@
+# The Soulseek search of B2 Player on the phone: cmus-b2-add --serve on port 5031, which answers only
+# Tailscale addresses (100.64.0.0/10) and this machine. The phone needs Tailscale on; let the port in
+# on the Tailscale interface once:
+#   sudo ufw allow in on tailscale0 to any port 5031 proto tcp
+#   cp cmus-b2-phone.service ~/.config/systemd/user/ && systemctl --user enable --now cmus-b2-phone
+[Unit]
+Description=Soulseek search of B2 Player (cmus-b2-add --serve)
+Wants=slskd.service
+After=network-online.target slskd.service
+
+[Service]
+ExecStart=%h/projects/cmus-b2/contrib/cmus-b2-add --serve 5031
+# the downloads it starts go on when it restarts
+KillMode=process
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

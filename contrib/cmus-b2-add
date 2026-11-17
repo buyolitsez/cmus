@@ -23,6 +23,9 @@ it from the bucket. YouTube Music tracks are its best stream without a
 re-encode (Opus about 130 kbit/s without Premium), tagged, with cover.jpg. The local copy is removed, kept (cmus plays it as
 downloaded) or you are asked, by the cmus option added_local_copy.
 
+B2 Player on the phone searches Soulseek and adds albums the same way through
+"cmus-b2-add --serve 5031" (contrib/cmus-b2-phone.service), over Tailscale.
+
 In cmus: ":bind common T shell footclient -N <repo>/contrib/cmus-b2-add" opens
 it in a new window. Needs python-libtorrent, python-anthropic, python-ytmusicapi, python-mutagen,
 yt-dlp, mpv (to listen first) and ANTHROPIC_API_KEY
@@ -39,6 +42,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -67,11 +71,13 @@ p.add_argument("--music", default="~/Music")
 p.add_argument("--remote", default=REMOTE, help="rclone path of the bucket")
 p.add_argument("--tools", default="~/projects/b2-player/tools", help="sync-music.sh and publish-catalog.sh")
 p.add_argument("--job", help=argparse.SUPPRESS)  # a background download started by the window
+p.add_argument("--serve", type=int, metavar="PORT", help="answer the Soulseek search of B2 Player on the phone")
 a = p.parse_args()
 music = os.path.expanduser(a.music)
 tools = os.path.expanduser(a.tools)
 cache = os.path.expanduser("~/.cache/cmus-b2")
 SLSKD = "http://127.0.0.1:5030/api/v0/"
+SLSKD_ENV = os.path.expanduser("~/.config/cmus-b2/slskd.env")  # the Soulseek account
 JOBS = os.path.join(cache, "jobs")  # a folder per background download: job.json, pid, status, log
 job_status = None  # the status file, in a background download
 os.environ.setdefault("ESCDELAY", "25")  # Esc quits at once
@@ -143,14 +149,24 @@ def load_env():
                 os.environ.setdefault(k, v.strip().strip("'\""))
 
 
-def plan_albums(origin, albums):
-    """Where each album goes (relative to the music folder): Claude proposes a plan for all of them,
-    you answer in words ("this is art pop", "skip the live album", a path) until you accept it."""
+PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {"albums": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"source": {"type": "string"}, "target": {"type": "string"}, "exists": {"type": "string"},
+                       "why": {"type": "string", "description": "a few words, e.g. 'artist exists' or 'new artist in rock'"}},
+        "required": ["source", "target", "exists", "why"], "additionalProperties": False}}},
+    "required": ["albums"], "additionalProperties": False,
+}
+
+
+def plan_prompt(origin, albums):
+    """The first message to Claude about where the albums go: albums is {source folder: its file names}."""
     listing = "\n".join(
         f"- {src or '(torrent root)'}\n" + "".join(f"    {n}\n" for n in names[:40])
         for src, names in albums.items())
     library = library_listing("\n".join([origin, *albums]))
-    prompt = f"""Folders of my music library, relative to the library root: all genres and artists, a few
+    return f"""Folders of my music library, relative to the library root: all genres and artists, a few
 albums of each genre, and the folders whose names occur in the albums I add:
 <library>
 {library}
@@ -175,49 +191,55 @@ For each album choose the folder it should have in the library, relative to the 
 - The target must be a folder that does not exist in the library yet; never add suffixes to make it new.
 Answer with one entry per album, "source" exactly as given. I may answer with corrections in my own words;
 then answer with the whole plan again."""
-    schema = {
-        "type": "object",
-        "properties": {"albums": {"type": "array", "items": {
-            "type": "object",
-            "properties": {"source": {"type": "string"}, "target": {"type": "string"}, "exists": {"type": "string"},
-                           "why": {"type": "string", "description": "a few words, e.g. 'artist exists' or 'new artist in rock'"}},
-            "required": ["source", "target", "exists", "why"], "additionalProperties": False}}},
-        "required": ["albums"], "additionalProperties": False,
-    }
+
+
+def propose(messages):
+    """Claude's answer to messages (the prompt, then corrections): ({source: target}, [(source, target, note)]),
+    where a skipped album has no target and the note says why. Folders that already exist in the music folder
+    go back to Claude without asking."""
     load_env()
-    client, messages = anthropic.Anthropic(), [{"role": "user", "content": prompt}]
+    client = anthropic.Anthropic()
     while True:
-        print("Asking Claude where to put them...")
         r = client.beta.messages.create(
             model=MODEL, max_tokens=8000, messages=messages,
-            output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": PLAN_SCHEMA}},
             betas=["server-side-fallback-2026-07-01"], fallbacks="default")
         log_usage(r.usage)
         if r.stop_reason != "end_turn":
-            sys.exit(f"Claude did not answer ({r.stop_reason})")
-        answer = json.loads(next(b.text for b in r.content if b.type == "text"))["albums"]
-        plan, taken = {}, []
-        print()
-        for x in answer:
+            raise RuntimeError(f"Claude did not answer ({r.stop_reason})")
+        messages.append({"role": "assistant", "content": r.content})
+        plan, rows, taken = {}, [], []
+        for x in json.loads(next(b.text for b in r.content if b.type == "text"))["albums"]:
             src, target, exists = x["source"], x["target"].strip("/"), x["exists"].strip("/")
-            print(f"{src or origin}")
             if exists or not target:
-                print(f"  skip: {'already in the library at ' + exists if exists else x['why']}")
+                rows.append((src, None, "already in the library at " + exists if exists else x["why"]))
             elif os.path.exists(os.path.join(music, target)):
-                print(f"  -> {target}  (this folder already exists)")
                 taken.append(target)
             else:
-                print(f"  -> {target}  ({x['why']})")
                 plan[src] = target
-        messages.append({"role": "assistant", "content": r.content})
-        if taken:  # tell Claude without asking
-            feedback = "These folders already exist in my music folder, choose others: " + ", ".join(taken)
-        else:
-            feedback = ask("\nEnter: accept, q: quit, or tell Claude what to change: ")
-            if not feedback:
-                return plan
-            if feedback.lower() == "q":
-                return {}
+                rows.append((src, target, x["why"]))
+        if not taken:
+            return plan, rows
+        print("These folders already exist, asking Claude again: " + ", ".join(taken))
+        messages.append({"role": "user", "content": "These folders already exist in my music folder, choose others: " + ", ".join(taken)})
+
+
+def plan_albums(origin, albums):
+    """Where each album goes (relative to the music folder): Claude proposes a plan for all of them,
+    you answer in words ("this is art pop", "skip the live album", a path) until you accept it."""
+    messages = [{"role": "user", "content": plan_prompt(origin, albums)}]
+    while True:
+        print("Asking Claude where to put them...")
+        plan, rows = propose(messages)
+        print()
+        for src, target, note in rows:
+            print(src or origin)
+            print(f"  -> {target}  ({note})" if target else f"  skip: {note}")
+        feedback = ask("\nEnter: accept, q: quit, or tell Claude what to change: ")
+        if not feedback:
+            return plan
+        if feedback.lower() == "q":
+            return {}
         messages.append({"role": "user", "content": feedback})
 
 
@@ -542,7 +564,7 @@ def slskd(path, body=None):
 def slsk_login():
     """Starts slskd and waits until it is logged in to Soulseek. The first time asks for the account
     (Soulseek makes a new one for a free name) and keeps it in ~/.config/cmus-b2/slskd.env for slskd.service."""
-    env = os.path.expanduser("~/.config/cmus-b2/slskd.env")
+    env = SLSKD_ENV
     while True:
         if not os.path.exists(env):
             print("Soulseek account (a name nobody has yet makes a new account)")
@@ -576,9 +598,10 @@ def slsk_login():
 
 
 def slsk_folders(query):
-    """Folders with audio found on Soulseek: [(name, user, folder, files)], FLAC first, then the peers
-    with a free upload slot, a short queue and fast uploads. A folder is an album folder (CD1/Disc 2
-    stay inside it) and files are slskd's search results with their path relative to it."""
+    """Folders with audio found on Soulseek, FLAC first, then the peers with a free upload slot, a short
+    queue and fast uploads: dicts with name (unique, for the list), user, folder, kind ("FLAC 16/44.1"),
+    queue (the peer's queue, None with a free upload slot) and files. A folder is an album folder (CD1/Disc 2
+    stay inside it) and files are slskd's search results with their path relative to it (rel)."""
     slsk_login()
     s = slskd("searches", {"searchText": query})
     while not s["isComplete"]:
@@ -618,7 +641,9 @@ def slsk_folders(query):
         while name in names:
             name, n = f"{base} [{n}]", n + 1
         names.add(name)
-        out.append((name, user, d, sorted(files, key=lambda f: f["rel"])))
+        out.append({"name": name, "user": user, "folder": d, "kind": kind,
+                    "queue": None if r["hasFreeUploadSlot"] else r["queueLength"],
+                    "files": sorted(files, key=lambda f: f["rel"])})
     return out
 
 
@@ -680,7 +705,7 @@ def add_soulseek(query):
     folders = slsk_folders(query)
     if not folders:
         raise ValueError(f"Nothing found on Soulseek for {query}")
-    files = [(name, user, f) for name, user, d, fs in folders for f in fs]
+    files = [(x["name"], x["user"], f) for x in folders for f in x["files"]]
     picked = curses.wrapper(pick, f"Soulseek: {query}",
                             [(i, f"{name}/{f['rel']}", f["size"]) for i, (name, _, f) in enumerate(files)], size, True)
     if not picked:
@@ -696,10 +721,12 @@ def add_soulseek(query):
     return True
 
 
-def start_job(where, albums):
-    """Downloads and adds the albums in a background process (run_job), so the window can search again."""
-    tag = bool(shutil.which("picard")) and ask("Tag with Picard after downloading? [y/N] ").lower() == "y"
-    keep = option("added_local_copy") or "ask"
+def start_job(where, albums, tag=None, keep=None):
+    """Downloads and adds the albums in a background process (run_job), so the window can search again.
+    tag (Picard) and keep (the local copy: keep or delete) are asked if not given."""
+    if tag is None:
+        tag = bool(shutil.which("picard")) and ask("Tag with Picard after downloading? [y/N] ").lower() == "y"
+    keep = keep or option("added_local_copy") or "ask"
     if keep == "ask":  # asked now, the download goes on without the window
         keep = "keep" if ask("Remove the local copy once it is in the bucket? [Y/n] ").lower() == "n" else "delete"
     d = os.path.join(JOBS, str(uuid.uuid4()))
@@ -834,9 +861,9 @@ def run_job(d):
         say(f"error: {e} (log: {d}/log)")
 
 
-def jobs_lines():
-    """The background downloads for the first screen: running ones and those that ended in the last hour."""
-    lines = []
+def jobs():
+    """The background downloads, running ones and those that ended in the last hour: (source, album folders, status)."""
+    out = []
     for d in sorted(glob.glob(os.path.join(JOBS, "*/")), key=os.path.getmtime):
         try:
             job = json.load(open(os.path.join(d, "job.json"), encoding="utf-8"))
@@ -854,9 +881,96 @@ def jobs_lines():
                 os.kill(pid, 0)
             except ProcessLookupError:
                 status = f"stopped (log: {d}log)"
-        names = ", ".join(x["target"].split("/", 1)[-1] for x in job["albums"])  # without the genre
-        lines.append(f"{job['source']}: {names}  ·  {status}")
-    return lines
+        out.append((job["source"], [x["target"] for x in job["albums"]], status))
+    return out
+
+
+def jobs_lines():
+    """The background downloads for the first screen."""
+    return [f"{source}: {', '.join(t.split('/', 1)[-1] for t in targets)}  ·  {status}"  # without the genre
+            for source, targets, status in jobs()]
+
+
+def serve(port):
+    """--serve: the Soulseek search for B2 Player, which reaches it over Tailscale (contrib/cmus-b2-phone.service).
+    Answers only Tailscale addresses and this machine, in JSON:
+      POST /search {query}                 -> {search, results: [{name, user, folder, kind, queue, files: [{rel, size}]}]}
+      POST /plan {search, picks}           -> {plan, albums: [{name, target, note}]}, Claude's plan for the picked
+                                              results (their indices); a skipped album has no target
+      POST /plan {plan, feedback}          -> the plan again, changed as asked in words
+      POST /start {plan}                   -> {}: downloads and adds the albums in the background, as the window does
+      GET /jobs                            -> {jobs: [{source, albums, status}]}, the downloads of the last hour
+    """
+    import ipaddress
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    signal.signal(signal.SIGCHLD, signal.SIG_IGN)  # the background downloads end without waiting for them
+    tailnet = ipaddress.ip_network("100.64.0.0/10")
+    searches, plans, lock = {}, {}, threading.Lock()  # the last few of each
+
+    def remember(store, value):
+        with lock:
+            key = str(uuid.uuid4())
+            store[key] = value
+            for old in list(store)[:-20]:
+                del store[old]
+        return key
+
+    def answer(path, body):
+        if path == "/jobs":
+            return {"jobs": [{"source": s, "albums": t, "status": st} for s, t, st in jobs()]}
+        if path == "/search":
+            if not os.path.exists(SLSKD_ENV):
+                raise RuntimeError("No Soulseek account yet: search Soulseek in cmus once (T, then Tab)")
+            found = slsk_folders(body["query"])
+            return {"search": remember(searches, found), "results": [
+                {**{k: x[k] for k in ("name", "user", "folder", "kind", "queue")},
+                 "files": [{"rel": f["rel"], "size": f["size"]} for f in x["files"]]} for x in found]}
+        if path == "/plan":
+            if "feedback" in body:
+                p = plans[body["plan"]]
+                p["messages"].append({"role": "user", "content": body["feedback"]})
+            else:
+                picked = {x["name"]: x for x in (searches[body["search"]][i] for i in body["picks"])}
+                p = {"picked": picked, "messages": [{"role": "user", "content": plan_prompt(
+                    "Soulseek", {name: [f["rel"] for f in x["files"]] for name, x in picked.items()})}]}
+            p["plan"], rows = propose(p["messages"])
+            return {"plan": body.get("plan") or remember(plans, p),
+                    "albums": [{"name": src, "target": target, "note": note} for src, target, note in rows]}
+        if path == "/start":
+            p = plans.pop(body["plan"])
+            if not p["plan"]:
+                raise ValueError("Nothing to add")
+            start_job("Soulseek", [{"target": target, "user": p["picked"][name]["user"], "files": p["picked"][name]["files"]}
+                                   for name, target in p["plan"].items()], tag=False, keep=option("added_local_copy") or "delete")
+            return {}
+        raise LookupError(path)
+
+    class Handler(BaseHTTPRequestHandler):
+        def handle_one(self):
+            if not (ip := ipaddress.ip_address(self.client_address[0])).is_loopback and ip not in tailnet:
+                return self.send_error(403)
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                out, code = answer(self.path, json.loads(self.rfile.read(n)) if n else {}), 200
+            except LookupError as e:  # an unknown path, or a search or plan from before a restart
+                out, code = {"error": f"Not found: {e}"}, 404
+            except SystemExit:  # slsk_login could not log in and asks what to do
+                out, code = {"error": "Not logged in to Soulseek: journalctl --user -u slskd says why"}, 503
+            except Exception as e:
+                traceback.print_exc()
+                out, code = {"error": str(e)}, 500
+            data = json.dumps(out, ensure_ascii=False).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        do_GET = do_POST = handle_one
+
+    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
 
 def add_torrent(path):
@@ -948,6 +1062,8 @@ def upload(plan, tag=None):
 def main():
     if a.job:
         return run_job(a.job)
+    if a.serve:
+        return serve(a.serve)
     if a.torrent:
         plan = add_torrent(a.torrent)
     else:
