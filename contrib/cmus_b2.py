@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 
 REMOTE = "b2music:buyolitsez-music"
 OUT = os.path.expanduser("~/.cache/cmus-b2")
@@ -72,6 +73,10 @@ def cue_files(cue):
     with open(cue, encoding="utf-8", errors="replace") as f:
         names = re.findall(r'^\s*FILE\s+"(.+?)"', f.read(), re.M)
     return [os.path.join(os.path.dirname(cue), n) for n in names] + [cue]
+
+
+def trash(path):
+    subprocess.run(["trash", path] if sys.platform == "darwin" else ["gio", "trash", path], check=True)
 
 
 def picard(paths):

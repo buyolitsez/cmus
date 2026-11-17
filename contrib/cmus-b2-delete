@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 
-from cmus_b2 import OUT, REMOTE, cue_files, option, size
+from cmus_b2 import OUT, REMOTE, cue_files, option, size, trash
 
 p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 p.add_argument("files", nargs="+", help="files of the selected tracks, as cmus passes them")
@@ -88,7 +88,7 @@ if local:
     for path in hide:
         copy = os.path.join(local, path)
         if os.path.exists(copy):
-            subprocess.run(["gio", "trash", copy], check=True)
+            trash(copy)
             trashed += 1
         d = os.path.dirname(copy)
         while d.startswith(local + "/") and os.path.isdir(d) and not os.listdir(d):

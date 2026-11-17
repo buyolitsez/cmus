@@ -67,7 +67,7 @@ def upcoming(tid, roots, tracks):
 def write(queue, position, playing):
     tid = queue[0]
     data = {"version": 1, "track": tid, "queue": queue[:QUEUE_MAX], "position_ms": int(position * 1000), "playing": playing,
-            "time": int(time.time() * 1000), "device": "arch"}
+            "time": int(time.time() * 1000), "device": "mac" if sys.platform == "darwin" else "arch"}
     subprocess.run(["rclone", "rcat", REMOTE], input=json.dumps(data, indent=1, ensure_ascii=False).encode(), check=True)
     # the bucket keeps every version: only the newest one is worth keeping
     d, name = REMOTE.rsplit("/", 1)
@@ -85,7 +85,9 @@ def hook(args):
     # one status change at a time, so the uploads land in order
     lock = open(STATE + ".lock", "w")
     fcntl.flock(lock, fcntl.LOCK_EX)
-    pid = subprocess.run(["pidof", "-s", "cmus"], capture_output=True, text=True).stdout.strip()
+    # pgrep of macOS leaves out its ancestors, cmus among them, without -a
+    pid = subprocess.run(["pgrep", "-x", "cmus"] + (["-a"] if sys.platform == "darwin" else []),
+                         capture_output=True, text=True).stdout.partition("\n")[0]
     try:
         with open(STATE) as f:
             prev_pid, prev_status = f.read().split()
