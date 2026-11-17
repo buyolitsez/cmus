@@ -79,6 +79,10 @@ with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt") as lst:
     lst.flush()
     # on B2 this hides the files: the lifecycle rule removes them later
     rclone("delete", f"{a.remote}/music", "--files-from-raw", lst.name)
+if os.environ.get("CMUS_B2_MIRROR") == "1":
+    # listed as the phone lists its deletes, so that arch trashes the copies in its music source
+    r = subprocess.run(["rclone", "cat", f"{a.remote}/state/deleted.tsv"], capture_output=True, text=True)
+    rclone("rcat", f"{a.remote}/state/deleted.tsv", input=(r.stdout if r.returncode == 0 else "") + "".join(f"{p}\n" for p in sorted(hide)))
 with gzip.open(catalog_file, "wt", encoding="utf-8") as f:
     json.dump(catalog, f, ensure_ascii=False, separators=(",", ":"))
 rclone("copyto", catalog_file, f"{a.remote}/catalog.json.gz")
