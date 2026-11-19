@@ -27,6 +27,7 @@
 #include "file.h"
 #include "ui_curses.h"
 #include "xmalloc.h"
+#include "gbuf.h"
 
 #include <stdio.h>
 #include <ctype.h>
@@ -136,6 +137,7 @@ void filters_activate(int win_activate)
 	struct filter_entry *f;
 	struct expr *e, *expr = NULL;
 	int unchanged = 1;
+	static GBUF(names);
 
 	/* if no pending selection is to apply, edit currently select filter */
 	list_for_each_entry(f, &filters_head, node) {
@@ -203,10 +205,13 @@ void filters_activate(int win_activate)
 	}
 
 	/* update active flag */
+	gbuf_clear(&names);
 	list_for_each_entry(f, &filters_head, node) {
 		f->act_stat = f->sel_stat;
+		if (f->act_stat != FS_IGNORE)
+			gbuf_addf(&names, "%s%s%s", names.len ? " " : "", f->act_stat == FS_NO ? "!" : "", f->name);
 	}
-	lib_set_filter(expr);
+	lib_set_filter(expr, expr ? names.buffer : NULL);
 	filters_win->changed = 1;
 }
 
@@ -462,7 +467,7 @@ void filters_set_anonymous(const char *val)
 	list_for_each_entry(f, &filters_head, node)
 		f->act_stat = FS_IGNORE;
 
-	lib_set_filter(e);
+	lib_set_filter(e, val);
 
 	filters_win->changed = 1;
 }

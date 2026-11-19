@@ -99,6 +99,7 @@ extern struct rb_root lib_album_shuffle_root;
 extern enum aaa_mode aaa_mode;
 extern unsigned int play_sorted;
 extern char *lib_live_filter;
+extern char *lib_filter_str;
 
 extern struct searchable *tree_searchable;
 extern struct window *lib_tree_win;
@@ -116,7 +117,7 @@ struct track_info *lib_goto_prev(void);
 struct track_info *lib_goto_next_album(void);
 struct track_info *lib_goto_prev_album(void);
 void lib_add_track(struct track_info *track_info, void *opaque);
-void lib_set_filter(struct expr *expr);
+void lib_set_filter(struct expr *expr, const char *str);
 void lib_set_live_filter(const char *str);
 void lib_set_add_filter(struct expr *expr);
 int lib_remove(struct track_info *ti);

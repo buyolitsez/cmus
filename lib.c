@@ -39,6 +39,7 @@ unsigned int play_sorted = 0;
 enum aaa_mode aaa_mode = AAA_MODE_ALL;
 /* used in ui_curses.c for status display */
 char *lib_live_filter = NULL;
+char *lib_filter_str = NULL;
 
 struct rb_root lib_shuffle_root;
 struct rb_root lib_album_shuffle_root;
@@ -721,15 +722,6 @@ static void unset_live_filter(void)
 	live_filter_expr = NULL;
 }
 
-void lib_set_filter(struct expr *expr)
-{
-	int clear_before = lib_live_filter || filter;
-	unset_live_filter();
-	if (filter)
-		expr_free(filter);
-	filter = expr;
-	do_lib_filter(clear_before);
-}
 
 void lib_set_add_filter(struct expr *expr)
 {
@@ -783,6 +775,73 @@ static void restore_sel_track(void)
 			sel_track_ti = NULL;
 		}
 	}
+}
+
+/* next or previous track in the order of the current view */
+static struct tree_track *view_neighbor(struct tree_track *t, int next)
+{
+	struct rb_node *node;
+	struct list_head *item;
+
+	if (cur_view == SORTED_VIEW) {
+		item = next ? t->simple_track.node.next : t->simple_track.node.prev;
+		return item == &lib_editable.head ? NULL : (struct tree_track *)to_simple_track(item);
+	}
+
+	node = next ? rb_next(&t->tree_node) : rb_prev(&t->tree_node);
+	if (node)
+		return to_tree_track(node);
+	node = next ? rb_next(&t->album->tree_node) : rb_prev(&t->album->tree_node);
+	if (node)
+		return next ? album_first_track(to_album(node)) : album_last_track(to_album(node));
+	node = next ? rb_next(&t->album->artist->tree_node) : rb_prev(&t->album->artist->tree_node);
+	if (node)
+		return next ? artist_first_track(to_artist(node)) : artist_last_track(to_artist(node));
+	return NULL;
+}
+
+/* selected track, or the closest one to it that passes the filter */
+static struct tree_track *closest_unfiltered(struct tree_track *t)
+{
+	struct tree_track *next = t, *prev = t;
+
+	while (next || prev) {
+		if (next && !is_filtered(tree_track_info(next)))
+			return next;
+		if (prev && !is_filtered(tree_track_info(prev)))
+			return prev;
+		next = next ? view_neighbor(next, 1) : NULL;
+		prev = prev ? view_neighbor(prev, 0) : NULL;
+	}
+	return NULL;
+}
+
+void lib_set_filter(struct expr *expr, const char *str)
+{
+	int clear_before = lib_live_filter || filter;
+	struct window *win = lib_cur_win;
+	struct tree_track *sel;
+
+	unset_live_filter();
+	if (filter)
+		expr_free(filter);
+	filter = expr;
+	free(lib_filter_str);
+	lib_filter_str = str ? xstrdup(str) : NULL;
+
+	sel = get_sel_track();
+	if (sel)
+		sel = closest_unfiltered(sel);
+	if (sel) {
+		if (sel_track_ti)
+			track_info_unref(sel_track_ti);
+		sel_track_ti = tree_track_info(sel);
+		track_info_ref(sel_track_ti);
+	}
+	do_lib_filter(clear_before);
+	restore_sel_track();
+	if (win == lib_tree_win)
+		lib_cur_win = lib_tree_win;
 }
 
 /* determine if filter results could grow, in which case all tracks must be cleared and re-added */

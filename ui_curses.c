@@ -1573,12 +1573,17 @@ void update_filterline(void)
 {
 	if (cur_view != TREE_VIEW && cur_view != SORTED_VIEW)
 		return;
-	if (lib_live_filter) {
+	if (lib_live_filter || lib_filter_str) {
 		static GBUF(buf);
 		gbuf_clear(&buf);
 		int w;
 		bkgdset(pairs[CURSED_STATUSLINE]);
-		gbuf_addf(&buf, "filtered: %s", lib_live_filter);
+		if (lib_filter_str && strcmp(lib_filter_str, "lastfm_loved") == 0)
+			gbuf_add_str(&buf, "♥ liked");
+		else if (lib_filter_str)
+			gbuf_addf(&buf, "filter: %s", lib_filter_str);
+		if (lib_live_filter)
+			gbuf_addf(&buf, "%sfiltered: %s", buf.len ? "  " : "", lib_live_filter);
 		w = clamp(u_str_width(buf.buffer) + 2, win_w/4, win_w/2);
 		sprint(LINES-4, win_w-w, buf.buffer, w);
 	}
