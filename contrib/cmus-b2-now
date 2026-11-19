@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Continue listening between cmus and b2-player, through state/now-playing.json.
+"""One queue in cmus and b2-player, through state/now-playing.json.
 
-Whoever plays writes the track, the queue from it on and the position there. Hook it into cmus by adding
+Whoever plays writes the tracks played before, the current one, the ones after it and
+the position there. Hook it into cmus by adding
     cmus-b2-now "$@" &
 to the status_display_program script: on play, pause and track change of a
 bucket track it writes the file. When cmus starts or stops and the phone played
-later, the command line says so.
+later, the command line says so, and play on the same paused track goes on with
+what the phone played instead.
 
-"cmus-b2-now --resume" plays the track the file names, from where it stopped, and
-puts the rest of that queue into the cmus play queue:
+"cmus-b2-now --resume" does the same at once: it plays the track the file names,
+from where it stopped, and puts the rest of that queue into the cmus play queue:
 ":bind common R shell cmus-b2-now --resume".
 """
 import fcntl
@@ -22,7 +24,10 @@ from cmus_b2 import OUT, REMOTE as BUCKET, catalog_tracks, cmus, key_of, query
 
 REMOTE = BUCKET + "/state/now-playing.json"
 STATE = os.path.join(OUT, "now-playing-status")
-QUEUE_MAX = 200  # as in the app
+# the whole shared queue as last written or taken over here, for the tracks played before the current one
+SHARED = os.path.join(OUT, "now-playing-shared.json")
+QUEUE_MAX, PAST_MAX = 200, 100  # as in the app
+DEVICE = "mac" if sys.platform == "darwin" else "arch"
 
 
 def fmt(sec):
@@ -42,11 +47,33 @@ def position_now(h, duration):
     return moved if h.get("playing") and moved < duration else h["position_ms"] / 1000
 
 
+def album_of(tracks, tid):
+    d = os.path.dirname(next(t["path"] for i, _, t, _ in tracks if i == tid))
+    return [i for i, _, t, _ in tracks if os.path.dirname(t["path"]) == d]
+
+
 def album_rest(tracks, tid):
     """The tracks after tid on its album."""
-    d = os.path.dirname(next(t["path"] for i, _, t, _ in tracks if i == tid))
-    album = [i for i, _, t, _ in tracks if os.path.dirname(t["path"]) == d]
+    album = album_of(tracks, tid)
     return album[album.index(tid) + 1:]
+
+
+def save_shared(ids):
+    with open(SHARED, "w") as f:
+        json.dump(ids, f)
+
+
+def played(tid, tracks):
+    """The tracks before tid: those of the shared queue when tid is in it, else those of its album."""
+    try:
+        with open(SHARED) as f:
+            shared = json.load(f)
+    except (FileNotFoundError, ValueError):
+        shared = []
+    if tid in shared:
+        return shared[:shared.index(tid)][-PAST_MAX:]
+    album = album_of(tracks, tid)
+    return album[:album.index(tid)]
 
 
 def upcoming(tid, roots, tracks):
@@ -64,10 +91,12 @@ def upcoming(tid, roots, tracks):
     return [ids[k] for k in (key_of(f, roots) for f in files) if k in ids] + album_rest(tracks, tid)
 
 
-def write(queue, position, playing):
+def write(past, queue, position, playing):
     tid = queue[0]
-    data = {"version": 1, "track": tid, "queue": queue[:QUEUE_MAX], "position_ms": int(position * 1000), "playing": playing,
-            "time": int(time.time() * 1000), "device": "mac" if sys.platform == "darwin" else "arch"}
+    queue = queue[:QUEUE_MAX]
+    save_shared(past + queue)
+    data = {"version": 1, "track": tid, "past": past, "queue": queue, "position_ms": int(position * 1000), "playing": playing,
+            "time": int(time.time() * 1000), "device": DEVICE}
     subprocess.run(["rclone", "rcat", REMOTE], input=json.dumps(data, indent=1, ensure_ascii=False).encode(), check=True)
     # the bucket keeps every version: only the newest one is worth keeping
     d, name = REMOTE.rsplit("/", 1)
@@ -79,7 +108,8 @@ def write(queue, position, playing):
 
 
 def hook(args):
-    """status_display_program: write on play, on pause or stop after playing, else tell about the phone."""
+    """status_display_program: on play of the paused track go on with what the phone played later,
+    write on play and on pause or stop after playing, else tell about the phone."""
     status = args[args.index("status") + 1] if "status" in args else ""
     os.makedirs(OUT, exist_ok=True)
     # one status change at a time, so the uploads land in order
@@ -90,25 +120,31 @@ def hook(args):
                          capture_output=True, text=True).stdout.partition("\n")[0]
     try:
         with open(STATE) as f:
-            prev_pid, prev_status = f.read().split()
+            prev_pid, prev_status, prev_file = f.read().rstrip("\n").split(" ", 2)
     except (FileNotFoundError, ValueError):
-        prev_pid = prev_status = ""
-    with open(STATE, "w") as f:
-        f.write(f"{pid} {status}\n")
+        prev_pid = prev_status = prev_file = ""
     q = query()
+    file = q.get("file", "")
+    with open(STATE, "w") as f:
+        f.write(f"{pid} {status} {file}\n")
+    # Play on the track cmus stood paused on, not a newly chosen one: the phone's queue, when it played later, goes on.
+    if status == "playing" and prev_pid == pid and prev_status in ("paused", "stopped") and prev_file == file:
+        h = fetch()
+        if h and h.get("device") != DEVICE and resume(h) == 0:
+            return
     if status == "playing" or (prev_pid == pid and prev_status == "playing"):
-        key = key_of(q.get("file", ""), (q.get("set bucket_dir"), q.get("set download_dir")))
+        key = key_of(file, (q.get("set bucket_dir"), q.get("set download_dir")))
         tracks = list(catalog_tracks()) if key else []
         tid = next((tid for tid, k, _, _ in tracks if k == key), None)
         if tid:
             roots = (q.get("set bucket_dir"), q.get("set download_dir"))
-            write([tid] + upcoming(tid, roots, tracks), float(q.get("position", 0)), status == "playing")
+            write(played(tid, tracks), [tid] + upcoming(tid, roots, tracks), float(q.get("position", 0)), status == "playing")
     elif status in ("paused", "stopped"):
         h = fetch()
-        if h and h.get("device") == "phone":
+        if h and h.get("device") != DEVICE:
             t = next((t for tid, _, t, _ in catalog_tracks() if tid == h["track"]), None)
             if t:
-                cmus("-C", f"echo Phone: {t['title']} · {fmt(position_now(h, t['duration']))}, press R to continue")
+                cmus("-C", f"echo {h['device'].capitalize()}: {t['title']} · {fmt(position_now(h, t['duration']))}, play to continue")
 
 
 def file_of(key, bucket, download):
@@ -121,8 +157,7 @@ def file_of(key, bucket, download):
     return local if local and os.path.exists(local) else os.path.join(bucket, key)
 
 
-def resume():
-    h = fetch()
+def resume(h):
     if not h:
         cmus("-C", "echo Nothing to continue")
         return 1
@@ -133,6 +168,7 @@ def resume():
     if h["track"] not in by_id:
         cmus("-C", f"echo Not in the catalog: {h['track']}")
         return 1
+    save_shared(h.get("past", []) + h.get("queue", [h["track"]]))
     key, t = by_id[h["track"]]
     filename = file_of(key, bucket, download)
     position = position_now(h, t["duration"])
@@ -160,7 +196,7 @@ def resume():
 
 if __name__ == "__main__":
     try:
-        sys.exit(resume() if sys.argv[1:2] == ["--resume"] else hook(sys.argv[1:]))
+        sys.exit(resume(fetch()) if sys.argv[1:2] == ["--resume"] else hook(sys.argv[1:]))
     except Exception as e:
         cmus("-C", f"echo cmus-b2-now failed: {e}")
         sys.exit(1)
