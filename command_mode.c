@@ -1923,6 +1923,27 @@ static void cmd_browser_up(char *arg)
 	browser_up();
 }
 
+/*
+ * remote-now [POS DUR PLAYING TEXT]: what the phone plays, from contrib/cmus-b2-now; POS and DUR in seconds,
+ * PLAYING 1 or 0. Without arguments it clears it.
+ */
+static void cmd_remote_now(char *arg)
+{
+	char *end;
+	long pos, dur, playing;
+
+	if (!arg) {
+		set_remote_now(0, 0, 0, NULL);
+		return;
+	}
+	pos = strtol(arg, &end, 10);
+	dur = strtol(end, &end, 10);
+	playing = strtol(end, &end, 10);
+	while (*end == ' ')
+		end++;
+	set_remote_now(pos, dur, playing, end);
+}
+
 static void cmd_refresh(char *arg)
 {
 	clearok(curscr, TRUE);
@@ -2685,6 +2706,7 @@ struct command commands[] = {
 	{ "rand",                  cmd_rand,             0, 0,  NULL,                 0, 0          },
 	{ "quit",                  cmd_quit,             0, 1,  NULL,                 0, 0          },
 	{ "refresh",               cmd_refresh,          0, 0,  NULL,                 0, 0          },
+	{ "remote-now",            cmd_remote_now,       0, -1, NULL,                 0, 0          },
 	{ "reshuffle",             cmd_reshuffle,        0, 0,  NULL,                 0, 0          },
 	{ "run",                   cmd_run,              1, -1, expand_program_paths, 0, CMD_UNSAFE },
 	{ "save",                  cmd_save,             0, 1,  expand_load_save,     0, CMD_UNSAFE },

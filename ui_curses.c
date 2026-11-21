@@ -80,6 +80,7 @@
 #include <stdarg.h>
 #include <math.h>
 #include <sys/time.h>
+#include <time.h>
 
 #if defined(__sun__) || defined(__CYGWIN__)
 /* TIOCGWINSZ */
@@ -1303,23 +1304,88 @@ static void do_update_view(int full)
 	}
 }
 
+/*
+ * What the phone plays, from contrib/cmus-b2-now: the status line shows it while cmus does not play,
+ * with the position moving on from what the last remote-now said while it plays.
+ */
+static char *remote_now_text;
+static int remote_now_pos, remote_now_dur, remote_now_playing;
+static time_t remote_now_since;
+static int remote_now_shown_sec = -1;
+
+void set_remote_now(int pos, int dur, int playing, const char *text)
+{
+	free(remote_now_text);
+	remote_now_text = text && *text ? xstrdup(text) : NULL;
+	remote_now_pos = pos;
+	remote_now_dur = dur;
+	remote_now_playing = playing;
+	remote_now_since = time(NULL);
+	remote_now_shown_sec = -1;
+	update_statusline();
+}
+
+static bool remote_now_active(void)
+{
+	return remote_now_text && player_info.status != PLAYER_STATUS_PLAYING;
+}
+
+static int remote_now_position(void)
+{
+	int pos = remote_now_pos + (remote_now_playing ? (int)(time(NULL) - remote_now_since) : 0);
+	return remote_now_dur && pos > remote_now_dur ? remote_now_dur : pos;
+}
+
+/* A new second to show. */
+static bool remote_now_tick(void)
+{
+	return remote_now_active() && remote_now_position() != remote_now_shown_sec;
+}
+
+static void remote_now_format(struct gbuf *fmt, int pos)
+{
+	const char *s;
+
+	gbuf_add_str(fmt, " ");
+	for (s = remote_now_text; *s; s++) {
+		if (*s == '%')
+			gbuf_add_ch(fmt, '%');
+		gbuf_add_ch(fmt, *s);
+	}
+	gbuf_addf(fmt, "%%= %d:%02d", pos / 60, pos % 60);
+	if (remote_now_dur)
+		gbuf_addf(fmt, " / %d:%02d", remote_now_dur / 60, remote_now_dur % 60);
+	gbuf_add_str(fmt, " ");
+}
+
 static void do_update_statusline(void)
 {
 	struct fp_len len;
-	len = format_print(&print_buffer, win_w, statusline_format, get_global_fopts());
+	int pos = pos;
+	int duration = player_info.ti ? player_info.ti->duration : 0;
+
+	if (remote_now_active()) {
+		static GBUF(fmt);
+		gbuf_clear(&fmt);
+		pos = remote_now_shown_sec = remote_now_position();
+		duration = remote_now_dur;
+		remote_now_format(&fmt, pos);
+		len = format_print(&print_buffer, win_w, fmt.buffer, get_global_fopts());
+	} else {
+		len = format_print(&print_buffer, win_w, statusline_format, get_global_fopts());
+	}
 	bkgdset(pairs[CURSED_STATUSLINE]);
 	dump_print_buffer_no_clear(LINES - 2, 0, 0);
 
-	if (progress_bar && player_info.ti) {
-		int duration = player_info.ti->duration;
-		if (duration && duration >= player_info.pos) {
+	if (progress_bar) {
+		if (duration && duration >= pos) {
 			if (progress_bar == PROGRESS_BAR_LINE || progress_bar == PROGRESS_BAR_SHUTTLE) {
 				/* Draw a bar or short position marker within the blank space */
 				int shuttle_len = (progress_bar == PROGRESS_BAR_SHUTTLE) ? 2 : 0;
 				int bar_start = len.llen + len.mlen;
 				int bar_space = win_w - len.rlen - bar_start - shuttle_len;
 				if (bar_space >= 5) {
-					int bar_len = bar_space * player_info.pos / duration;
+					int bar_len = bar_space * pos / duration;
 				        if (progress_bar == PROGRESS_BAR_SHUTTLE) {
 						bar_start += bar_len;
 						bar_len = shuttle_len;
@@ -1329,7 +1395,7 @@ static void do_update_statusline(void)
 				}
 			} else if (progress_bar == PROGRESS_BAR_COLOR) {
 				/* Draw over the played portion of bar in alt color */
-				int w = win_w * player_info.pos / duration;
+				int w = win_w * pos / duration;
 
 				int skip = w;
 				int buf_index = u_skip_chars(print_buffer.buffer, &skip, false);
@@ -1341,7 +1407,7 @@ static void do_update_statusline(void)
 			} else { // PROGRESS_BAR_COLOR_SHUTTLE
 				/* Redraw a few cols in alt color to mark the current position */
 				int shuttle_len = min_u(6, win_w);
-				int x = (win_w - shuttle_len) * player_info.pos / duration;
+				int x = (win_w - shuttle_len) * pos / duration;
 
 				int skip = x;
 				int buf_index = u_skip_chars(print_buffer.buffer, &skip, false);
@@ -2059,6 +2125,8 @@ static void update(void)
 	}
 	if (player_info.position_changed || player_info.status_changed)
 		needs_status_update = 1;
+	if (remote_now_tick())
+		needs_status_update = 1;
 	switch (cur_view) {
 	case TREE_VIEW:
 		needs_view_update += lib_tree_win->changed || lib_track_win->changed;
@@ -2333,8 +2401,8 @@ static void main_loop(void)
 		if (player_info.status == PLAYER_STATUS_PLAYING) {
 			// player position updates need to be fast
 			tv.tv_usec = 100e3;
-		} else if (cur_view == TORRENTS_VIEW) {
-			/* the view refreshes its numbers */
+		} else if (cur_view == TORRENTS_VIEW || remote_now_active()) {
+			/* the view refreshes its numbers, the phone's position moves on */
 			tv.tv_usec = 500e3;
 		}
 

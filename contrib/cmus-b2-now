@@ -5,9 +5,9 @@ Whoever plays writes the tracks played before, the current one, the ones after i
 the position there. Hook it into cmus by adding
     cmus-b2-now "$@" &
 to the status_display_program script: on play, pause and track change of a
-bucket track it writes the file. When cmus starts or stops and the phone played
-later, the command line says so, and play on the same paused track goes on with
-what the phone played instead.
+bucket track it writes the file. While cmus does not play, its status line shows
+what the phone plays ("cmus-b2-now --watch"), and play on the same paused track
+goes on with what the phone played instead.
 
 "cmus-b2-now --resume" does the same at once: it plays the track the file names,
 from where it stopped, and puts the rest of that queue into the cmus play queue:
@@ -28,11 +28,6 @@ STATE = os.path.join(OUT, "now-playing-status")
 SHARED = os.path.join(OUT, "now-playing-shared.json")
 QUEUE_MAX, PAST_MAX = 200, 100  # as in the app
 DEVICE = "mac" if sys.platform == "darwin" else "arch"
-
-
-def fmt(sec):
-    sec = int(sec)
-    return f"{sec // 60}:{sec % 60:02d}"
 
 
 def fetch():
@@ -139,12 +134,63 @@ def hook(args):
         if tid:
             roots = (q.get("set bucket_dir"), q.get("set download_dir"))
             write(played(tid, tracks), [tid] + upcoming(tid, roots, tracks), float(q.get("position", 0)), status == "playing")
-    elif status in ("paused", "stopped"):
+    if status in ("paused", "stopped"):
+        # the status line shows what the phone plays until cmus plays again
+        subprocess.Popen([sys.argv[0], "--watch"], start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def remote_at(h, tracks):
+    """Where the phone is now: (title, artist, duration) and the position, moved on into the next tracks
+    of its queue. None well past the end of the written track with nothing written since: it stopped
+    without saying so."""
+    queue = [tracks[i] for i in h.get("queue", [h["track"]]) if i in tracks]
+    if not queue or h["track"] not in tracks:
+        return None
+    pos = (h["position_ms"] + (max(0, time.time() * 1000 - h["time"]) if h.get("playing") else 0)) / 1000
+    if pos > queue[0][2] + 30:
+        return None
+    for t in queue:
+        if pos < t[2] or not h.get("playing"):
+            return t, pos
+        pos -= t[2]
+    return None
+
+
+def watch():
+    """While cmus does not play: what the phone plays, in the status line. The position moves on in cmus
+    itself; the file is read again as the track ends there, and every 10 s for a pause or a skip."""
+    lock = open(os.path.join(OUT, "now-playing-watch.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return 0  # one watcher is enough
+    tracks, catalog_mtime, shown = {}, None, None
+    while query().get("status") in ("paused", "stopped"):
         h = fetch()
+        line, key = None, None
+        # nothing new for an hour: the phone is not about to play
+        wait = 15 if h and time.time() * 1000 - h["time"] < 3600_000 else 60
         if h and h.get("device") != DEVICE:
-            t = next((t for tid, _, t, _ in catalog_tracks() if tid == h["track"]), None)
-            if t:
-                cmus("-C", f"echo {h['device'].capitalize()}: {t['title']} · {fmt(position_now(h, t['duration']))}, play to continue")
+            mtime = os.path.getmtime(os.path.join(OUT, "catalog.json.gz"))
+            if mtime != catalog_mtime:
+                tracks = {tid: (t["title"], t.get("artist") or al.get("artist", ""), t["duration"]) for tid, _, t, al in catalog_tracks()}
+                catalog_mtime = mtime
+            at = remote_at(h, tracks)
+            if at:
+                (title, artist, duration), pos = at
+                playing = bool(h.get("playing"))
+                line = f"{int(pos)} {int(duration)} {int(playing)} {h['device'].capitalize()} {'▶' if playing else '⏸'} {title} — {artist}"
+                key = (h["time"], title)
+                if playing:
+                    wait = max(1, min(10, duration - pos + 0.5))
+        # cmus moves the position on by itself: the same line is not sent again
+        if key != shown:
+            cmus("-C", f"remote-now {line}" if line else "remote-now")
+            shown = key
+        time.sleep(wait)
+    cmus("-C", "remote-now")
+    return 0
 
 
 def file_of(key, bucket, download):
@@ -196,6 +242,8 @@ def resume(h):
 
 if __name__ == "__main__":
     try:
+        if sys.argv[1:2] == ["--watch"]:
+            sys.exit(watch())
         sys.exit(resume(fetch()) if sys.argv[1:2] == ["--resume"] else hook(sys.argv[1:]))
     except Exception as e:
         cmus("-C", f"echo cmus-b2-now failed: {e}")

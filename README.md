@@ -126,9 +126,9 @@ tracks or albums there (in the background, keeping mtimes, so `sync-music.sh` ha
 
 One queue with the phone: add `cmus-b2-now "$@" &` to the `status_display_program` script, so cmus writes the
 tracks played before, the current one, the ones after it and the position to `state/now-playing.json` on play, pause
-and track change, as the app does, and the app takes that queue over. When cmus starts or stops after the phone
-played, the command line says what it was, and play on the track cmus stands paused on goes on with the phone's queue
-and position instead; choosing another track plays that one. `:bind common R shell <repo>/contrib/cmus-b2-now --resume`
+and track change, as the app does, and the app takes that queue over. While cmus does not play, its status line shows
+what the phone plays, with the position moving on (`:remote-now`, fed by `cmus-b2-now --watch`), and play on the
+track cmus stands paused on goes on with the phone's queue and position instead; choosing another track plays that one. `:bind common R shell <repo>/contrib/cmus-b2-now --resume`
 takes the phone's queue over at once.
 
 Assistant: `:bind common O shell footclient -N <repo>/contrib/cmus-b2-ask` opens a chat with Claude, the same assistant
