@@ -165,7 +165,7 @@ then not seeded).
 
 Releases on rutracker: `:bind common S shell footclient -N <repo>/contrib/cmus-b2-release` opens a window with the
 bucket's folders as a tree, open at the playing album: Space marks albums or whole folders, Enter goes on (several
-albums: one release each, or one together). It checks every track
+albums: one release each, or one together; `t` first opens the marked albums in Picard, as `K` does). It checks every track
 (bitrate, sample rate, decode errors, `flac -t`, and whether the highs are cut like in a re-encode), draws two
 spectrograms, and Claude looks the album up on the web and fills in the topic: header, genre, country, year, source,
 forum, "about" and line-up, around the tracklist, durations and quality check made from the files. You change the

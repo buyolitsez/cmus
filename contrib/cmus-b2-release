@@ -2,7 +2,8 @@
 """Make a rutracker release of albums of the bucket: the .torrent, the topic title and the BBCode description.
 In cmus: ":bind common S shell footclient -N <repo>/contrib/cmus-b2-release" opens it in a new window with the
 bucket's folders as a tree (genre, artist, album), open at the playing album: Space marks albums or whole
-folders, Enter goes on. Several albums make one release each, or one release together.
+folders, Enter goes on. Several albums make one release each, or one release together. t opens the marked
+albums (or the one under the cursor) in Picard first, as K does in cmus (contrib/cmus-b2-tag).
 
 The files are read from the bucket mount (bucket_dir). Every track is probed (codec, bitrate, sample rate,
 decode errors, flac -t for FLAC) and two spectrograms are drawn. Claude fills in what the tags do not say
@@ -503,22 +504,31 @@ with corrections in my own words; then answer with all the fields again."""})
     print(wait_for_rutracker(torrent, paths, since))
 
 
+def picard_albums(bucket, albums):
+    """Tag the albums' files with Picard as K does in cmus; CUE images (one file, several tracks) are left out."""
+    files = [p for ps in albums for p in ps if ps.count(p) == 1]
+    subprocess.run([os.path.join(os.path.dirname(os.path.realpath(__file__)), "cmus-b2-tag"),
+                    *[os.path.join(bucket, p) for p in files]])
+
+
 def main():
     bucket = option("bucket_dir")
     if not bucket:
         done("Set bucket_dir in cmus.", 1)
-    sizes = {}  # album folder (with its CD folders) -> size, from the catalog cmus-b2 keeps
+    sizes, paths = {}, {}  # album folder (with its CD folders) -> size and track files, from the catalog cmus-b2 keeps
     with gzip.open(os.path.join(OUT, "catalog.json.gz"), "rt", encoding="utf-8") as f:
         for al in json.load(f)["albums"]:
             for t in al["tracks"]:
                 d = album_of(t["path"])
                 sizes[d] = sizes.get(d, 0) + t.get("size", 0)
+                paths.setdefault(d, []).append(t["path"])
     albums = sorted(sizes)
     playing = query().get("file", "")
     key = key_of(playing[len("cue://"):].rsplit("/", 1)[0] if playing.startswith("cue://") else playing,
                  [bucket, option("download_dir")])
     marked = curses.wrapper(pick, "Release on rutracker", [(i, d, sizes[d]) for i, d in enumerate(albums)],
-                            at=album_of(key) if key else None, enter="release marked", unit="albums")
+                            at=album_of(key) if key else None, enter="release marked", unit="albums",
+                            keys={"t": ("tag in Picard", lambda marked: picard_albums(bucket, [paths[albums[i]] for i in marked]))})
     dirs = [albums[i] for i in marked or []]
     if not dirs:
         return

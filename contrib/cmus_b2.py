@@ -114,12 +114,13 @@ class Node:
         return [self] if self.index is not None else [f for c in self.children.values() for f in c.files()]
 
 
-def pick(scr, title, files, fmt=size, ordered=False, play=None, at=None, enter="download marked", unit="files"):
+def pick(scr, title, files, fmt=size, ordered=False, play=None, at=None, enter="download marked", unit="files", keys=None):
     """Tree of folders and files: arrows move and open folders, Space marks.
     Returns the indices of the marked files, or None. fmt shows the third field of files; ordered keeps
     the order of files instead of sorting by name. play(indices) plays files (a folder, or a file and
     the ones after it in its folder), play([]) stops; it returns what to show in the title. at is a path in the
-    tree to open and start on; enter names what Enter does and unit what the leaves are."""
+    tree to open and start on; enter names what Enter does and unit what the leaves are. keys maps more keys
+    to (label, run): run(indices) gets the marked files, or the ones under the cursor, outside curses."""
     root = Node("")
     for i, path, n in files:
         node = root
@@ -169,8 +170,8 @@ def pick(scr, title, files, fmt=size, ordered=False, play=None, at=None, enter="
             sz = fmt(node.size)
             text = line[:max(0, w - len(sz) - 3)].ljust(w - len(sz) - 3) + " " + sz
             scr.addnstr(y, 0, text, w - 1, curses.A_REVERSE if top + y - 1 == cur else 0)
-        keys = "  p play  s stop" if play else ""
-        scr.addnstr(h - 1, 0, f"↑↓ move  → open  ← close  Space mark  a all{keys}  Enter {enter}  q quit", w - 1, curses.A_DIM)
+        more = ("  p play  s stop" if play else "") + "".join(f"  {k} {label}" for k, (label, _) in (keys or {}).items())
+        scr.addnstr(h - 1, 0, f"↑↓ move  → open  ← close  Space mark  a all{more}  Enter {enter}  q quit", w - 1, curses.A_DIM)
         k = scr.get_wch()
         node = rows[cur] if rows else None
         if k in (curses.KEY_UP, "k"):
@@ -208,6 +209,12 @@ def pick(scr, title, files, fmt=size, ordered=False, play=None, at=None, enter="
             playing = play([f.index for f in fl])
         elif k == "s" and play:
             playing = play([])
+        elif keys and k in keys and node:
+            curses.def_prog_mode()
+            curses.endwin()
+            keys[k][1]([f.index for f in marked] or [f.index for f in node.files()])
+            curses.reset_prog_mode()
+            scr.clear()
         elif k in ("\n", "\r", curses.KEY_ENTER):
             return [f.index for f in marked]
         elif k == "q":
