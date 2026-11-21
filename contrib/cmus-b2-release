@@ -28,13 +28,14 @@ import sys
 import tempfile
 import time
 import urllib.parse
+import warnings
 
 import anthropic
 import libtorrent as lt
 import mutagen
 import requests
 
-from cmus_b2 import OUT, key_of, option
+from cmus_b2 import OUT, band_drop, key_of, option
 
 AUDIO_EXT = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".ape", ".wv", ".aac"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png"}
@@ -57,6 +58,7 @@ Traditional Electronic, Ambient, Modern Classical, Electroacoustic, Experimental
 Industrial, Noise, EBM, Dark Electro, Aggrotech, Cyberpunk, Synthpop, New Wave
 Hi-Res форматы, оцифровки: Hi-Res stereo и многоканальная музыка (24 bit above 48 kHz); Оцифровки с аналоговых носителей"""
 DOWNLOADS = os.path.expanduser("~/Downloads")
+warnings.filterwarnings("ignore", category=DeprecationWarning)  # python-libtorrent's file_storage calls
 
 p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 p.add_argument("files", nargs="+", help="files of the selected tracks, as cmus passes them")
@@ -201,7 +203,7 @@ FIELDS = {
     "country": "the artist's country in Russian, e.g. 'Япония'",
     "web": "'yes' if this is a digital (WEB) release, 'no' for a CD/vinyl rip, '' if unknown",
     "source_url": "the official page of the release (Bandcamp, the label, the artist) found on the web, or ''",
-    "about": "about the album in Russian, 1-3 short paragraphs, facts only; '' if nothing reliable is known",
+    "about": "about the album in Russian, one or two short paragraphs, facts only; '' if nothing reliable is known",
     "lineup": "line-up in Russian, one person per line ('Имя — роль'); '' if unknown",
     "forum": "the rutracker forum that fits, one of <forums>, with its lossy or lossless subforum as rutracker "
              "names it",
@@ -252,6 +254,9 @@ class Release:
         self.codecs = sorted({x["codec"] for x in t})
         self.lossless = all(c in LOSSLESS for c in self.codecs)
         self.duration = sum(x["duration"] for x in t)
+        mid = sorted(self.audio, key=lambda f: self.tracks[f]["duration"])[len(self.audio) // 2]
+        self.cutoff = 19000 if self.lossless else 16500
+        self.drop = band_drop(os.path.join(mount, mid), self.cutoff)
 
     def codec(self):
         return "/".join(CODEC.get(c, c.upper()) for c in self.codecs)
@@ -282,10 +287,12 @@ class Release:
             out.append("decode errors in: " + ", ".join(os.path.basename(f) for f in broken))
         if any(c in ("opus", "vorbis") for c in self.codecs) or any("youtube" in (x["comment"] + x["album"]).lower() for x in t.values()):
             out.append("looks like a YouTube rip: rutracker takes no re-encodes and frowns on YouTube sources")
-        if not self.lossless and self.bitrate() != "lossless":
-            avg = sum(x["kbps"] for x in t.values()) / len(t)
-            if avg < 192:
-                out.append(f"average bitrate {avg:.0f} kbps is below the usual minimum of 192")
+        avg = sum(x["kbps"] for x in t.values()) / len(t)
+        if not self.lossless and avg < 192:
+            out.append(f"average bitrate {avg:.0f} kbps is below the usual minimum of 192")
+        if self.drop is not None and self.drop > 45:
+            out.append(f"nothing above {self.cutoff / 1000:g} kHz: made from a lossy file of lower quality, "
+                       "and the spectrograms in the post show it")
         return out
 
     def facts(self):
@@ -424,7 +431,12 @@ def release(mount, dirs, out_root):
     r = Release(mount, dirs)
     for w in r.warnings():
         print("Warning:", w)
-    work = tempfile.mkdtemp(prefix="cmus-b2-release-")
+    with tempfile.TemporaryDirectory(prefix="cmus-b2-release-") as work:
+        publish(r, mount, work, out_root)
+
+
+def publish(r, mount, work, out_root):
+    """Claude's draft until accepted, then the images, the .torrent, the clipboard and the wait for rutracker."""
     cover = cover_of(r.files, mount, os.path.join(work, "cover.jpg"))
     mid = r.audio[len(r.audio) // 2]
     spectra = [spectrogram(os.path.join(mount, f), os.path.join(work, f"spectrum-{i}.png"))
@@ -438,10 +450,10 @@ rutracker's music forums (each has lossy and lossless subforums):
 <forums>
 {FORUMS}
 </forums>
-Fill in the fields of the topic. Prefer the tags; search the web for what they do not say (country, genres
-as RYM or Discogs give them, the release's official page, line-up, a few facts about the album). Write only
-what you found or what the files show; leave a field empty rather than guess. I may answer with corrections
-in my own words; then answer with all the fields again."""}]
+Fill in the fields of the topic. Search the web first (the release's official page, Discogs, RYM, Bandcamp):
+country, genres as RYM or Discogs give them, the official page, line-up and a few facts for "about"; prefer
+the tags where they say it. Write only what you found or what the files show; leave a field empty rather
+than guess. I may answer with corrections in my own words; then answer with all the fields again."""}]
     while True:
         print("Asking Claude...")
         x = fill(messages)
@@ -469,7 +481,8 @@ in my own words; then answer with all the fields again."""}]
         with open(os.path.join(out, fn), "w", encoding="utf-8") as f:
             f.write(s)
 
-    search = " ".join(x["artist"].split(" [")[0:1] + [x["album"]])
+    latin = re.search(r"\[(.+)\]$", x["artist"])  # rutracker's search finds the Latin name better
+    search = f"{latin.group(1) if latin else x['artist']} {x['album']}"
     subprocess.Popen(["xdg-open", "https://rutracker.org/forum/tracker.php?nm=" + urllib.parse.quote(search)],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print(f"\nForum: {x['forum']}\nTorrent: {torrent}\nFirefox shows the rutracker search, to check the album is not there yet.")
