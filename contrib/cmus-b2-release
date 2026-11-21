@@ -85,7 +85,9 @@ def done(msg, code=0):
 
 
 def run(*cmd):
-    return subprocess.run(cmd, capture_output=True, text=True)
+    # without stdin: ffmpeg switches the terminal off its line mode to read keys, and 4 of them at a time
+    # can leave it so, without echo, for the questions after the check
+    return subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
 
 
 def album_of(path):
@@ -215,9 +217,9 @@ FIELDS = {
     "lineup": "line-up in Russian, one person per line ('Имя — роль'); '' if unknown",
     "forum": "the rutracker forum that fits, one of <forums>, with its lossy or lossless subforum as rutracker "
              "names it",
-    "notes": "for me only, in Russian, not posted, plain text, one short point per line: anything that may break "
-             "rutracker rules (re-encodes, YouTube rips, bitrate below 192 kbps, missing cover) or that I should "
-             "check; '' if nothing",
+    "notes": "for me only, in Russian, not posted, plain text, one short point per line, without numbers (they are "
+             "added): anything that may break rutracker rules (re-encodes, YouTube rips, bitrate below 192 kbps, "
+             "missing cover) or that I should check or fix, and for what you could fix yourself, how; '' if nothing",
 }
 TAGS = ["date", "genre", "album", "artist", "albumartist", "title"]
 CHANGES = {  # what Claude may change, when I ask it to
@@ -488,16 +490,19 @@ def wrap(text, first="  • ", rest="    "):
 
 
 def show_notes(notes):
-    """Claude's notes as a list: a point per line (or per sentence, if it wrote one paragraph)."""
+    """Claude's notes as a numbered list, a point per line (or per sentence, if it wrote one paragraph).
+    Returns the points."""
     notes = html.unescape(notes).strip()
     if not notes:
-        return
+        return []
     points = [p for p in notes.splitlines() if p.strip()]
     if len(points) == 1:
         points = re.split(r"(?<=[.!?])\s+(?=[A-ZА-ЯЁ])", points[0])
+    points = [re.sub(r"^\s*(?:[-•*]|\d+[.)])\s*", "", p) for p in points]
     print("\n\x1b[1mClaude:\x1b[0m")
-    for p in points:
-        print(wrap(re.sub(r"^\s*(?:[-•*]|\d+[.)])\s*", "", p)))
+    for i, p in enumerate(points, 1):
+        print(wrap(p, f"{i:>3}. ", "     "))
+    return points
 
 
 def edited_files(r, edit):
@@ -586,13 +591,17 @@ with the changes I asked for in tag_edits and renames (fill the fields as they w
     while True:
         x = ask_claude(messages, True)
         print("\n" + post(r, x) + "\nTitle: " + title_of(r, x) + f"\nForum: {x['forum']}")
-        show_notes(x["notes"])
+        points = show_notes(x["notes"])
         edits, names = show_changes(r, x)
-        answer = ask("\nEnter: accept, q: quit, or tell Claude what to change: ")
+        answer = ask("\nEnter: accept, q: quit, numbers of the points to fix (1 3), or tell Claude what to change: ")
         if answer.lower() == "q":
             return
         if not answer:
             break
+        picked = [int(n) for n in re.findall(r"\d+", answer)]
+        if re.fullmatch(r"[\d\s,]+", answer) and all(1 <= n <= len(points) for n in picked):
+            answer = ("Fix these points of your notes yourself, the way you think right (tags, names, the fields):\n"
+                      + "\n".join(f"- {points[n - 1]}" for n in picked))
         messages.append({"role": "user", "content": answer})
         print("Asking Claude...")
 
