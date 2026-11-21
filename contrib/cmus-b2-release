@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Make a rutracker release of the albums selected in cmus: the .torrent, the topic title and the BBCode description.
-In cmus: ":bind common S run footclient -N <repo>/contrib/cmus-b2-release" opens it in a new window for the
-selected album, artist or marked tracks. Several albums make one release each, or one release together.
+"""Make a rutracker release of albums of the bucket: the .torrent, the topic title and the BBCode description.
+In cmus: ":bind common S shell footclient -N <repo>/contrib/cmus-b2-release" opens it in a new window with the
+bucket's folders as a tree (genre, artist, album), open at the playing album: Space marks albums or whole
+folders, Enter goes on. Several albums make one release each, or one release together.
 
 The files are read from the bucket mount (bucket_dir). Every track is probed (codec, bitrate, sample rate,
 decode errors, flac -t for FLAC) and two spectrograms are drawn. Claude fills in what the tags do not say
@@ -18,6 +19,8 @@ Needs python-libtorrent, python-anthropic, python-mutagen, python-requests, ffmp
 ANTHROPIC_API_KEY (in the environment or as ANTHROPIC_API_KEY=... in ~/.config/cmus-b2/env).
 """
 import argparse
+import curses
+import gzip
 import glob
 import json
 import os
@@ -35,7 +38,7 @@ import libtorrent as lt
 import mutagen
 import requests
 
-from cmus_b2 import OUT, band_drop, key_of, option
+from cmus_b2 import OUT, band_drop, key_of, option, pick, query
 
 AUDIO_EXT = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".ape", ".wv", ".aac"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png"}
@@ -61,8 +64,7 @@ DOWNLOADS = os.path.expanduser("~/Downloads")
 warnings.filterwarnings("ignore", category=DeprecationWarning)  # python-libtorrent's file_storage calls
 
 p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-p.add_argument("files", nargs="+", help="files of the selected tracks, as cmus passes them")
-a = p.parse_args()
+p.parse_args()
 
 
 def ask(prompt):
@@ -505,11 +507,21 @@ def main():
     bucket = option("bucket_dir")
     if not bucket:
         done("Set bucket_dir in cmus.", 1)
-    roots = [bucket, option("download_dir")]
-    keys = {key_of(f, roots) for f in a.files} - {None}
-    dirs = sorted({album_of(k) if isinstance(k, str) else k[0] for k in keys})
+    sizes = {}  # album folder (with its CD folders) -> size, from the catalog cmus-b2 keeps
+    with gzip.open(os.path.join(OUT, "catalog.json.gz"), "rt", encoding="utf-8") as f:
+        for al in json.load(f)["albums"]:
+            for t in al["tracks"]:
+                d = album_of(t["path"])
+                sizes[d] = sizes.get(d, 0) + t.get("size", 0)
+    albums = sorted(sizes)
+    playing = query().get("file", "")
+    key = key_of(playing[len("cue://"):].rsplit("/", 1)[0] if playing.startswith("cue://") else playing,
+                 [bucket, option("download_dir")])
+    marked = curses.wrapper(pick, "Release on rutracker", [(i, d, sizes[d]) for i, d in enumerate(albums)],
+                            at=album_of(key) if key else None, enter="release marked", unit="albums")
+    dirs = [albums[i] for i in marked or []]
     if not dirs:
-        done("No bucket tracks selected.", 1)
+        return
     groups = [[d] for d in dirs]
     if len(dirs) > 1:
         print("Albums:\n  " + "\n  ".join(dirs))
@@ -518,6 +530,7 @@ def main():
     for g in groups:
         release(bucket, g, os.path.join(DOWNLOADS, "rutracker"))
     done("Done.")
+
 
 
 if __name__ == "__main__":
