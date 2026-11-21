@@ -55,7 +55,7 @@ import urllib.request
 import anthropic
 import libtorrent as lt
 
-from cmus_b2 import REMOTE, cmus, option, picard, size
+from cmus_b2 import REMOTE, band_drop, cmus, option, picard, size
 
 AUDIO_EXT = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".ape", ".wv", ".aac"}
 COVER_EXT = {".jpg", ".jpeg", ".png"}
@@ -757,23 +757,6 @@ def looks_like(path, ext):
             ".ape": h[:4] == b"MAC ", ".wv": h[:4] == b"wvpk"}.get(ext, False)
 
 
-def high_band(path):
-    """How much quieter, in dB, 30 s in the middle of the track are above 19 kHz than at 11-15 kHz. An MP3 encoder
-    cuts the highs at 16-19 kHz, so a FLAC made from an MP3 has next to nothing there; a real rip has something."""
-    sec = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
-                               capture_output=True, text=True).stdout or 0)
-
-    def level(filters):
-        out = subprocess.run(["nice", "ffmpeg", "-nostdin", "-hide_banner", "-ss", str(max(sec / 2 - 15, 0)), "-t", "30",
-                              "-i", path, "-af", filters + "astats=measure_perchannel=none", "-f", "null", "-"],
-                             capture_output=True, text=True).stderr
-        m = re.findall(r"RMS level dB: (-?[\d.]+|-inf)", out)
-        return float(m[-1]) if m else None
-
-    mid, high = level("highpass=f=11000," * 4 + "lowpass=f=15000," * 4), level("highpass=f=19000," * 8)
-    return None if mid is None or high is None else mid - high
-
-
 def check_album(folder, remove=True):
     """Checks downloaded files before they go to the bucket: removes what is neither audio nor a cover, and
     returns (problems, warnings). Problems (audio that is not what its extension says or broken FLAC) mean the
@@ -801,7 +784,7 @@ def check_album(folder, remove=True):
             problems.append(f"{os.path.relpath(path, folder)}: broken FLAC")
     warnings = []
     if flacs:
-        drop = high_band(sorted(flacs, key=os.path.getsize)[len(flacs) // 2])
+        drop = band_drop(sorted(flacs, key=os.path.getsize)[len(flacs) // 2], 19000)
         if drop is not None and drop > 45:
             warnings.append(f"{os.path.basename(folder)} may be an MP3 made into FLAC (nothing above 19 kHz)")
     for p in problems:

@@ -163,6 +163,19 @@ library refreshed, and the copies made only for tagging removed. Keep renaming a
 CUE images are left out. `cmus-b2-add` also offers Picard before it uploads the new albums (a torrent's tagged files are
 then not seeded).
 
+Releases on rutracker: `:bind common S run footclient -N <repo>/contrib/cmus-b2-release` opens a window for the
+selected album, artist or marked tracks (several albums: one release each, or one together). It checks every track
+(bitrate, sample rate, decode errors, `flac -t`, and whether the highs are cut like in a re-encode), draws two
+spectrograms, and Claude looks the album up on the web and fills in the topic: header, genre, country, year, source,
+forum, "about" and line-up, around the tracklist, durations and quality check made from the files. You change the
+draft in words until Enter. Then the cover (500 px) and the spectrograms are uploaded (imageban.ru with
+`IMAGEBAN_KEY=...` in `~/.config/cmus-b2/env`, else imgbox.com), the `.torrent` (rutracker's announce, built from the
+bucket mount) and the texts are written to `~/Downloads/rutracker/<release>/`, Firefox shows rutracker's search for the
+album, and Enter puts the title, then the description, then the path of the `.torrent` in the clipboard. You create the
+topic yourself. rutracker keeps the info hash, so when you download the topic's `.torrent` to `~/Downloads`, the window
+finds it and hands it to `cmus-b2-seed`, which seeds it from the bucket. Needs `python-requests`, `python-mutagen`,
+`python-libtorrent`, `python-anthropic`, `ffmpeg`, `flac`, `wl-clipboard` and `ANTHROPIC_API_KEY`.
+
 Seeding: `contrib/cmus-b2-seed.service` (edit the path, then `systemctl --user enable --now cmus-b2-seed`) seeds the
 added torrents from the bucket mount, with the files at their library paths and nothing downloaded; files whose tags
 were changed later are just not seeded. View 9 lists the torrents (`:set torrents_program=<repo>/contrib/cmus-b2-seed`
