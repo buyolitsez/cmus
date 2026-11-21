@@ -40,7 +40,7 @@ def rclone(*args, **kw):
 
 def cat(name):
     r = subprocess.run(["rclone", "cat", f"{a.remote}/{name}"], capture_output=True)
-    return r.stdout if r.returncode == 0 else None
+    return r.stdout if r.returncode == 0 and r.stdout else None  # B2 gives nothing, and no error, for a missing file
 
 
 def moved(s):
@@ -78,13 +78,16 @@ def kind(path):
 
 
 mount = option("bucket_dir") or os.path.expanduser("~/b2music")
-kinds = {}
+kinds = {}  # None for a rename whose files were moved by a run that stopped after that: the rest is done again
 for old, new in pairs:
-    if kind(new):
-        sys.exit(f"{new} is already in the bucket.")
     kinds[old] = kind(old)
-    if not kinds[old]:
+    if kinds[old] and kind(new):
+        sys.exit(f"{new} is already in the bucket.")
+    if not kinds[old] and not kind(new):
         sys.exit(f"{old} is not in the bucket.")
+# the mount keeps its directory listings a year (see rclone-b2music.service)
+for d in {os.path.dirname(x) for pair in pairs for x in pair}:
+    subprocess.run(["rclone", "rc", "vfs/refresh", f"dir={d}"], capture_output=True)
 
 catalog = json.loads(gzip.decompress(cat("catalog.json.gz")))
 albums = [al for al in catalog["albums"] if any(moved(t["path"]) != t["path"] for t in al["tracks"])]
@@ -94,8 +97,9 @@ for al in albums:
     d = os.path.dirname(first)
     group = os.path.dirname(d) if DISC_DIR.match(os.path.basename(d)) else d
     try:
-        tag = (mutagen.File(os.path.join(mount, first), easy=True) or {}).get("album", [""])[0]
-    except mutagen.MutagenError:
+        f = os.path.join(mount, first if os.path.exists(os.path.join(mount, first)) else moved(first))
+        tag = (mutagen.File(f, easy=True) or {}).get("album", [""])[0]
+    except (mutagen.MutagenError, OSError):
         tag = None
     # an id made some other way (a CUE image's album, joined discs) stays as it is
     if tag is not None and album_id(f"{group}\0{tag}") == al["id"]:
@@ -129,7 +133,9 @@ if input("Rename? [y/N] ").strip().lower() != "y":
 
 print("Moving the files in the bucket...")
 for old, new in pairs:
-    if kinds[old] == "folder":
+    if not kinds[old]:
+        pass
+    elif kinds[old] == "folder":
         rclone("move", f"{a.remote}/music/{old}", f"{a.remote}/music/{new}", "--transfers", "8")
         subprocess.run(["rclone", "move", f"{a.remote}/lite/{old}", f"{a.remote}/lite/{new}"], capture_output=True)
     else:
