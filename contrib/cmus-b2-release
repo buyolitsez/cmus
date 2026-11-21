@@ -1,0 +1,510 @@
+#!/usr/bin/env python3
+"""Make a rutracker release of the albums selected in cmus: the .torrent, the topic title and the BBCode description.
+In cmus: ":bind common S run footclient -N <repo>/contrib/cmus-b2-release" opens it in a new window for the
+selected album, artist or marked tracks. Several albums make one release each, or one release together.
+
+The files are read from the bucket mount (bucket_dir). Every track is probed (codec, bitrate, sample rate,
+decode errors, flac -t for FLAC) and two spectrograms are drawn. Claude fills in what the tags do not say
+(genre, country, the artist's name in the original script, the forum section, "about" and line-up; it can
+search the web) and changes the draft by what you write until you accept it. Then the cover (at most 500 px)
+and the spectrograms are uploaded (to imageban.ru with IMAGEBAN_KEY, else imgbox.com), the .torrent and
+the texts are written to ~/Downloads/rutracker/<release>/, and the title and the description go to the
+clipboard one after the other, while Firefox shows the rutracker search for the album, to check it is not there yet.
+Nothing is posted: you create the topic on rutracker yourself. rutracker keeps the info hash, so once you
+download its .torrent (with your passkey) to ~/Downloads, the window finds it and hands it to cmus-b2-seed,
+which seeds it from the bucket (view 9).
+
+Needs python-libtorrent, python-anthropic, python-mutagen, python-requests, ffmpeg, flac, wl-copy and
+ANTHROPIC_API_KEY (in the environment or as ANTHROPIC_API_KEY=... in ~/.config/cmus-b2/env).
+"""
+import argparse
+import glob
+import json
+import os
+import re
+import select
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.parse
+
+import anthropic
+import libtorrent as lt
+import mutagen
+import requests
+
+from cmus_b2 import OUT, key_of, option
+
+AUDIO_EXT = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".ape", ".wv", ".aac"}
+IMAGE_EXT = {".jpg", ".jpeg", ".png"}
+KEEP_EXT = AUDIO_EXT | IMAGE_EXT | {".cue", ".log", ".pdf", ".txt"}  # what goes into the torrent
+LOSSLESS = {"flac", "alac", "ape", "wavpack"}
+CODEC = {"mp3": "MP3", "flac": "FLAC", "alac": "ALAC", "ape": "APE", "wavpack": "WavPack", "aac": "AAC",
+         "opus": "Opus", "vorbis": "OGG Vorbis"}
+DISC_DIR = re.compile(r"^(cd|disc|disk|диск)\s*\d+\b", re.I)
+ANNOUNCE = ["http://bt.t-ru.org/ann", "http://bt2.t-ru.org/ann", "http://bt3.t-ru.org/ann", "http://bt4.t-ru.org/ann"]
+MODEL = "claude-sonnet-5-5"
+FORUMS = """Музыка: Классическая и современная академическая музыка; Фольклор, Народная и Этническая музыка;
+New Age, Relax, Meditative & Flamenco; Рэп, Хип-Хоп, R'n'B; Reggae, Ska, Dub; Саундтреки, караоке и мюзиклы;
+Шансон, Авторская и Военная песня; Лейбл- и сцен-паки. Неофициальные сборники и ремастеринги. AI-музыка
+Популярная музыка: Отечественная поп-музыка; Зарубежная поп-музыка; Eurodance, Disco, Hi-NRG
+Джазовая и Блюзовая музыка: Зарубежный джаз; Зарубежный блюз; Отечественный джаз и блюз
+Рок-музыка: Зарубежный Rock; Зарубежный Metal; Зарубежные Alternative, Punk, Independent; Отечественный Rock, Metal
+Электронная музыка: Trance, Goa Trance, Psy-Trance, PsyChill, Ambient, Dub; House, Techno, Hardcore, Hardstyle, Jumpstyle;
+Drum & Bass, Jungle, Breakbeat, Dubstep, IDM, Electro; Chillout, Lounge, Downtempo, Trip-Hop;
+Traditional Electronic, Ambient, Modern Classical, Electroacoustic, Experimental;
+Industrial, Noise, EBM, Dark Electro, Aggrotech, Cyberpunk, Synthpop, New Wave
+Hi-Res форматы, оцифровки: Hi-Res stereo и многоканальная музыка (24 bit above 48 kHz); Оцифровки с аналоговых носителей"""
+DOWNLOADS = os.path.expanduser("~/Downloads")
+
+p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+p.add_argument("files", nargs="+", help="files of the selected tracks, as cmus passes them")
+a = p.parse_args()
+
+
+def ask(prompt):
+    try:
+        return input(prompt).strip()
+    except EOFError:
+        sys.exit(1)
+
+
+def done(msg, code=0):
+    ask(f"{msg} Enter closes the window.")
+    sys.exit(code)
+
+
+def run(*cmd):
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def album_of(path):
+    d = os.path.dirname(path)
+    return os.path.dirname(d) if DISC_DIR.match(os.path.basename(d)) else d
+
+
+def mmss(s):
+    s = round(s)
+    return f"{s // 60}:{s % 60:02d}"
+
+
+def hhmmss(s):
+    s = round(s)
+    return f"{s // 3600:02d}:{s // 60 % 60:02d}:{s % 60:02d}"
+
+
+def khz(hz):
+    return f"{hz / 1000:g} kHz"
+
+
+def tag(tags, name):
+    v = (tags or {}).get(name)
+    return str(v[0]).strip() if v else ""
+
+
+def probe(path):
+    """Codec, bitrate and the rest of one audio file, its tags, and what a full decode found wrong."""
+    r = json.loads(run("ffprobe", "-v", "error", "-show_format", "-show_streams", "-of", "json", path).stdout)
+    st = next(s for s in r["streams"] if s["codec_type"] == "audio")
+    dur = float(r["format"]["duration"])
+    errors = run("ffmpeg", "-v", "error", "-i", path, "-map", "0:a", "-f", "null", "-").stderr.strip()
+    if st["codec_name"] == "flac" and run("flac", "-t", "-s", path).returncode:
+        errors = (errors + "\nflac -t failed").strip()
+    try:
+        tags = mutagen.File(path, easy=True)
+    except mutagen.MutagenError:
+        tags = None
+    comment = " ".join(str(v) for k, v in (mutagen.File(path) or {}).items() if "comm" in k.lower() or "purl" in k.lower()) if tags else ""
+    return {"codec": st["codec_name"], "rate": int(st["sample_rate"]), "channels": st["channels"],
+            "bits": int(st.get("bits_per_raw_sample") or st.get("bits_per_sample") or 0),
+            "stream_kbps": int(st.get("bit_rate") or 0) // 1000,
+            "kbps": int(r["format"]["size"]) * 8 / dur / 1000, "duration": dur, "errors": errors,
+            "title": tag(tags, "title"), "artist": tag(tags, "artist"), "album": tag(tags, "album"),
+            "date": tag(tags, "date")[:4], "genre": tag(tags, "genre"), "comment": comment}
+
+
+def cover_of(files, folder, out):
+    """The album's cover as a JPEG of at most 500 px in out, or None: the biggest cover/folder/front image, else
+    any image, else the art embedded in the first track."""
+    images = [f for f in files if os.path.splitext(f)[1].lower() in IMAGE_EXT]
+    named = [f for f in images if re.match(r"(cover|folder|front)", os.path.basename(f), re.I)] or images
+    src = max(named, key=lambda f: os.path.getsize(os.path.join(folder, f)), default=None)
+    args = ["-i", os.path.join(folder, src)] if src else \
+        ["-i", os.path.join(folder, next(f for f in files if os.path.splitext(f)[1].lower() in AUDIO_EXT)), "-an"]
+    r = run("ffmpeg", "-v", "error", "-y", *args, "-frames:v", "1", "-vf",
+            "scale='min(500,iw)':'min(500,ih)':force_original_aspect_ratio=decrease", "-q:v", "2", out)
+    return out if r.returncode == 0 and os.path.exists(out) else None
+
+
+def spectrogram(path, out):
+    run("ffmpeg", "-v", "error", "-y", "-i", path, "-lavfi", "showspectrumpic=s=1000x500:legend=1", out)
+    return out
+
+
+def upload_images(paths):
+    """Uploads images for the post: [(full image URL, thumbnail URL of 300 px)]. To imageban.ru, which rutracker
+    recommends, with IMAGEBAN_KEY (the secret key of an imageban account) in ~/.config/cmus-b2/env, else to
+    imgbox.com, which needs no account (fastpic takes no uploads from scripts)."""
+    load_env()
+    key = os.environ.get("IMAGEBAN_KEY")
+    s = requests.Session()
+    s.headers["User-Agent"] = "Mozilla/5.0"
+    urls = []
+    if key:
+        for path in paths:
+            with open(path, "rb") as f:
+                r = s.post("https://api.imageban.ru/v1", headers={"Authorization": f"Bearer {key}"}, timeout=120,
+                           data={"p_res": "300"}, files={"image": (os.path.basename(path), f)})
+            r.raise_for_status()
+            link = r.json()["data"][0]["link"]
+            urls.append((link, link.replace("/out/", "/thumbs/")))
+        return urls
+    csrf = re.search(r'content="([^"]+)" name="csrf-token"', s.get("https://imgbox.com/", timeout=30).text).group(1)
+    h = {"X-CSRF-Token": csrf, "X-Requested-With": "XMLHttpRequest"}
+    tok = s.post("https://imgbox.com/ajax/token/generate", headers=h, timeout=30).json()
+    for path in paths:
+        with open(path, "rb") as f:
+            r = s.post("https://imgbox.com/upload/process", headers=h, timeout=120,
+                       data={"token_id": tok["token_id"], "token_secret": tok["token_secret"], "content_type": "1",
+                             "thumbnail_size": "300r", "gallery_id": "null", "gallery_secret": "null",
+                             "comments_enabled": "0"},
+                       files={"files[]": (os.path.basename(path), f, "image/png" if path.endswith(".png") else "image/jpeg")})
+        r.raise_for_status()
+        img = r.json()["files"][0]
+        urls.append((img["original_url"], img["thumbnail_url"]))
+    return urls
+
+
+def load_env():
+    env = os.path.expanduser("~/.config/cmus-b2/env")
+    if os.path.exists(env):
+        for line in open(env, encoding="utf-8"):
+            k, _, v = line.strip().partition("=")
+            if k and not k.startswith("#"):
+                os.environ.setdefault(k, v.strip().strip("'\""))
+
+
+def log_usage(u):
+    with open(os.path.join(OUT, "assistant.log"), "a") as f:
+        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} cmus-b2-release tokens: in {u.input_tokens}, "
+                f"cache read {u.cache_read_input_tokens or 0}, cache write {u.cache_creation_input_tokens or 0}, "
+                f"out {u.output_tokens}\n")
+
+
+FIELDS = {
+    "artist": "the artist as in the topic: original script first, then the Latin name in square brackets when they "
+              "differ, e.g. '岡田拓郎 [Takuro Okada]' or 'Кино'",
+    "album": "the album title (for several albums: their titles joined with ' + ', or a collective title)",
+    "year": "year of release, or a range for several albums",
+    "genre": "2-4 genres in English, comma-separated, e.g. 'Chamber Jazz, Ambient, New Age'",
+    "country": "the artist's country in Russian, e.g. 'Япония'",
+    "web": "'yes' if this is a digital (WEB) release, 'no' for a CD/vinyl rip, '' if unknown",
+    "source_url": "the official page of the release (Bandcamp, the label, the artist) found on the web, or ''",
+    "about": "about the album in Russian, 1-3 short paragraphs, facts only; '' if nothing reliable is known",
+    "lineup": "line-up in Russian, one person per line ('Имя — роль'); '' if unknown",
+    "forum": "the rutracker forum that fits, one of <forums>, with its lossy or lossless subforum as rutracker "
+             "names it",
+    "notes": "for me only, in Russian, not posted: anything that may break rutracker rules (re-encodes, YouTube "
+             "rips, bitrate below 192 kbps, missing cover), or ''",
+}
+SCHEMA = {"type": "object", "properties": {k: {"type": "string", "description": v} for k, v in FIELDS.items()},
+          "required": list(FIELDS), "additionalProperties": False}
+
+
+def fill(messages):
+    """Claude's answer to messages (the facts, then corrections) as a dict of FIELDS."""
+    load_env()
+    client = anthropic.Anthropic()
+    while True:
+        r = client.beta.messages.create(
+            model=MODEL, max_tokens=16000, messages=messages,
+            tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 5}],
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": SCHEMA}},
+            betas=["server-side-fallback-2026-07-01"], fallbacks="default")
+        log_usage(r.usage)
+        messages.append({"role": "assistant", "content": r.content})
+        if r.stop_reason == "pause_turn":  # the web search goes on
+            continue
+        if r.stop_reason != "end_turn":
+            raise RuntimeError(f"Claude did not answer ({r.stop_reason})")
+        return json.loads([b.text for b in r.content if b.type == "text"][-1])
+
+
+class Release:
+    def __init__(self, mount, dirs):
+        self.mount, self.dirs = mount, dirs
+        self.files = []  # paths relative to the mount
+        for d in dirs:
+            for root, subdirs, names in os.walk(os.path.join(mount, d)):
+                subdirs.sort()
+                for n in sorted(names):
+                    if not n.startswith(".") and ".sync-conflict-" not in n and os.path.splitext(n)[1].lower() in KEEP_EXT:
+                        self.files.append(os.path.relpath(os.path.join(root, n), mount))
+        self.audio = [f for f in self.files if os.path.splitext(f)[1].lower() in AUDIO_EXT]
+        self.size = sum(os.path.getsize(os.path.join(mount, f)) for f in self.files)
+        self.tracks = {}
+        for i, f in enumerate(self.audio, 1):
+            print(f"\r\x1b[KChecking {i}/{len(self.audio)}: {os.path.basename(f)}", end="", flush=True)
+            self.tracks[f] = probe(os.path.join(mount, f))
+        print()
+        t = list(self.tracks.values())
+        self.codecs = sorted({x["codec"] for x in t})
+        self.lossless = all(c in LOSSLESS for c in self.codecs)
+        self.duration = sum(x["duration"] for x in t)
+
+    def codec(self):
+        return "/".join(CODEC.get(c, c.upper()) for c in self.codecs)
+
+    def bitrate(self):
+        """'lossless', '320 kbps' (CBR) or 'VBR ~245 kbps'."""
+        if self.lossless:
+            return "lossless"
+        rates = {x["stream_kbps"] for x in self.tracks.values()}
+        if len(rates) == 1 and self.codecs == ["mp3"]:
+            return f"{rates.pop()} kbps"
+        avg = sum(x["kbps"] * x["duration"] for x in self.tracks.values()) / self.duration
+        return f"VBR ~{avg:.0f} kbps"
+
+    def specs(self):
+        t = list(self.tracks.values())
+        bits = sorted({x["bits"] for x in t if x["bits"]}) if self.lossless else []
+        ch = {1: "mono", 2: "stereo"}
+        return " / ".join(filter(None, [
+            "/".join(f"{b} bit" for b in bits), "/".join(khz(r) for r in sorted({x["rate"] for x in t})),
+            "/".join(ch.get(c, f"{c} ch") for c in sorted({x["channels"] for x in t}))]))
+
+    def warnings(self):
+        out = []
+        t = self.tracks
+        broken = [f for f in t if t[f]["errors"]]
+        if broken:
+            out.append("decode errors in: " + ", ".join(os.path.basename(f) for f in broken))
+        if any(c in ("opus", "vorbis") for c in self.codecs) or any("youtube" in (x["comment"] + x["album"]).lower() for x in t.values()):
+            out.append("looks like a YouTube rip: rutracker takes no re-encodes and frowns on YouTube sources")
+        if not self.lossless and self.bitrate() != "lossless":
+            avg = sum(x["kbps"] for x in t.values()) / len(t)
+            if avg < 192:
+                out.append(f"average bitrate {avg:.0f} kbps is below the usual minimum of 192")
+        return out
+
+    def facts(self):
+        lines = []
+        for f, x in self.tracks.items():
+            lines.append(f"{f}\t{x['artist']}\t{x['album']}\t{x['date']}\t{x['genre']}\t{x['title']}\t{mmss(x['duration'])}")
+        return (f"Folders in my library (genre/artist/album): {', '.join(self.dirs)}\n"
+                f"Codec {self.codec()}, {self.bitrate()}, {self.specs()}\n"
+                f"Tracks (path, artist, album, year, genre tags, title, length):\n" + "\n".join(lines) +
+                f"\nOther files: {', '.join(os.path.basename(f) for f in self.files if f not in self.tracks) or 'none'}\n"
+                f"Checks found: {'; '.join(self.warnings()) or 'nothing wrong'}")
+
+    def tracklist(self):
+        out = []
+        groups = {}
+        for f in self.audio:  # an album, or a disc of it, per group
+            groups.setdefault(os.path.dirname(f), []).append(f)
+        for d, fs in groups.items():
+            if len(groups) > 1:
+                x = self.tracks[fs[0]]
+                head = x["album"] or os.path.basename(d)
+                if x["date"] and len(self.dirs) > 1:
+                    head += f" ({x['date']})"
+                if DISC_DIR.match(os.path.basename(d)):
+                    head += " — " + os.path.basename(d)
+                out.append(f"\n[b]{head}[/b]")
+            for i, f in enumerate(fs, 1):
+                x = self.tracks[f]
+                title = x["title"] or re.sub(r"^\d+[\s.\-_]*", "", os.path.splitext(os.path.basename(f))[0])
+                out.append(f"{i} {title} [{mmss(x['duration'])}]")
+        return "\n".join(out).strip("\n")
+
+    def quality(self):
+        rows = []
+        width = max(len(os.path.basename(f)) for f in self.audio)
+        for f in self.audio:
+            x = self.tracks[f]
+            bits = f"{x['bits']} bit  " if self.lossless and x["bits"] else ""
+            check = "flac -t OK" if x["codec"] == "flac" and not x["errors"] else ""
+            err = "decode errors" if x["errors"] else "decoded without errors"
+            rows.append(f"{os.path.basename(f).ljust(width)}  {CODEC.get(x['codec'], x['codec'])}  "
+                        f"{x['kbps']:6.1f} kbps  {bits}{khz(x['rate'])}  {err}{'  ' + check if check else ''}")
+        return "\n".join(rows)
+
+
+def title_of(r, x):
+    rip = " (tracks)" if r.lossless else ""
+    web = "[WEB] " if x["web"] == "yes" else ""
+    return f"({x['genre']}) {web}{x['artist']} - {x['album']} - {x['year']}, {r.codec()}{rip}, {r.bitrate()}"
+
+
+def post(r, x, cover="ОБЛОЖКА", spectra=()):
+    scans = len([f for f in r.files if os.path.splitext(f)[1].lower() in IMAGE_EXT]) > len(r.dirs)
+    lines = [f"[size=24]{x['artist']} / {x['album']}[/size]", "", f"[img=right]{cover}[/img]", "",
+             f"[b]Жанр[/b]: {x['genre']}",
+             f"[b]Страна исполнителя (группы)[/b]: {x['country']}",
+             f"[b]Год издания[/b]: {x['year']}",
+             f"[b]Аудиокодек[/b]: {r.codec()}",
+             "[b]Тип рипа[/b]: tracks",
+             f"[b]Битрейт аудио[/b]: {r.bitrate()}",
+             f"[b]Характеристики[/b]: {r.specs()}",
+             f"[b]Продолжительность[/b]: {hhmmss(r.duration)}",
+             f"[b]Размер раздачи[/b]: {r.size / 2**20:.1f} MB",
+             "[b]Источник[/b]: " + (f"[url={x['source_url']}]{'WEB' if x['web'] == 'yes' else 'официальная страница'}[/url]"
+                                     if x["source_url"] else "WEB" if x["web"] == "yes" else "—"),
+             f"[b]Наличие сканов в содержимом раздачи[/b]: {'да' if scans else 'нет'}",
+             "[b]Треклист[/b]:", r.tracklist(), "",
+             '[spoiler="Скриншот проверки качества материала"]', "[code]", r.quality(), "[/code]"]
+    if spectra:
+        lines += ["Спектрограммы:"] + [f"[url={full}][img]{thumb}[/img][/url]" for full, thumb in spectra]
+    lines.append("[/spoiler]")
+    if x["about"]:
+        lines += ["", '[spoiler="Об альбоме (сборнике)"]', x["about"], "[/spoiler]"]
+    if x["lineup"]:
+        lines += ["", '[spoiler="Состав"]', x["lineup"], "[/spoiler]"]
+    return "\n".join(lines) + "\n"
+
+
+def make_torrent(r, name, out):
+    """The .torrent of the release's files under the folder name; the files keep their names inside."""
+    with tempfile.TemporaryDirectory() as tmp:  # the root folder as links to the album folders on the mount
+        root = os.path.join(tmp, name)
+        if len(r.dirs) == 1:
+            os.symlink(os.path.join(r.mount, r.dirs[0]), root)
+            rel = {f: os.path.relpath(f, r.dirs[0]) for f in r.files}
+        else:
+            os.mkdir(root)
+            for d in r.dirs:
+                os.symlink(os.path.join(r.mount, d), os.path.join(root, os.path.basename(d)))
+            rel = {f: os.path.join(os.path.basename(d), os.path.relpath(f, d)) for d in r.dirs for f in r.files
+                   if f.startswith(d + "/")}
+        fs = lt.file_storage()
+        for f in r.files:
+            fs.add_file(os.path.join(name, rel[f]), os.path.getsize(os.path.join(r.mount, f)))
+        ct = lt.create_torrent(fs, 0, lt.create_torrent.v1_only)
+        for tier, url in enumerate(ANNOUNCE):
+            ct.add_tracker(url, tier)
+        print("Hashing the files (read from the bucket)...")
+        lt.set_piece_hashes(ct, tmp)
+        t = ct.generate()
+    t[b"info"][b"private"] = 0  # as rutracker's own .torrent has it, so the info hash stays the same
+    with open(out, "wb") as f:
+        f.write(lt.bencode(t))
+    return {os.path.join(name, rel[f]): f for f in r.files}
+
+
+def files_of(path):
+    fs = lt.torrent_info(path).files()
+    return [(fs.file_path(i), fs.file_size(i)) for i in range(fs.num_files())]
+
+
+def wait_for_rutracker(ours, paths, since):
+    """Waits for the .torrent downloaded from rutracker (same files as ours) in ~/Downloads and seeds it."""
+    want = sorted(files_of(ours))
+    print(f"Waiting for the .torrent from rutracker in {DOWNLOADS} to seed it from the bucket (Enter stops waiting)...")
+    while True:
+        for f in glob.glob(os.path.join(DOWNLOADS, "*.torrent")):
+            try:
+                if os.path.getmtime(f) < since or sorted(files_of(f)) != want:
+                    continue
+            except RuntimeError:  # still being written
+                continue
+            seed_map = {str(i): p for i, (path, _) in enumerate(files_of(f)) for p in [paths[path]]}
+            with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8") as m:
+                json.dump(seed_map, m, ensure_ascii=False)
+                m.flush()
+                here = os.path.dirname(os.path.realpath(__file__))
+                subprocess.run([os.path.join(here, "cmus-b2-seed"), "add", f, m.name], check=True)
+            return f"Seeding {os.path.basename(f)} from the bucket (view 9)."
+        if select.select([sys.stdin], [], [], 2)[0]:
+            sys.stdin.readline()
+            return "Not seeding: download the .torrent from the topic and add it in view 9 with a, or press S again."
+
+
+def release(mount, dirs, out_root):
+    r = Release(mount, dirs)
+    for w in r.warnings():
+        print("Warning:", w)
+    work = tempfile.mkdtemp(prefix="cmus-b2-release-")
+    cover = cover_of(r.files, mount, os.path.join(work, "cover.jpg"))
+    mid = r.audio[len(r.audio) // 2]
+    spectra = [spectrogram(os.path.join(mount, f), os.path.join(work, f"spectrum-{i}.png"))
+               for i, f in enumerate(dict.fromkeys([r.audio[0], mid]), 1)]
+
+    messages = [{"role": "user", "content": f"""I am making a rutracker.org release of music from my library.
+<facts>
+{r.facts()}
+</facts>
+rutracker's music forums (each has lossy and lossless subforums):
+<forums>
+{FORUMS}
+</forums>
+Fill in the fields of the topic. Prefer the tags; search the web for what they do not say (country, genres
+as RYM or Discogs give them, the release's official page, line-up, a few facts about the album). Write only
+what you found or what the files show; leave a field empty rather than guess. I may answer with corrections
+in my own words; then answer with all the fields again."""}]
+    while True:
+        print("Asking Claude...")
+        x = fill(messages)
+        print("\n" + post(r, x) + "\nTitle: " + title_of(r, x) + f"\nForum: {x['forum']}")
+        if x["notes"]:
+            print("Claude: " + x["notes"])
+        answer = ask("\nEnter: accept, q: quit, or tell Claude what to change: ")
+        if answer.lower() == "q":
+            return
+        if not answer:
+            break
+        messages.append({"role": "user", "content": answer})
+
+    title = title_of(r, x)
+    name = re.sub(r'[\\/:*?"<>|]', "_", f"{x['artist']} - {x['album']} ({x['year']}) [{r.codec()}]").strip()
+    out = os.path.join(out_root, name)
+    os.makedirs(out, exist_ok=True)
+    print("Uploading the cover and the spectrograms...")
+    images = upload_images(([cover] if cover else []) + spectra)
+    text = post(r, x, images[0][0] if cover else "ОБЛОЖКА", images[1:] if cover else images)
+    since = time.time()
+    torrent = os.path.join(out, title.replace("/", "_") + ".torrent")
+    paths = make_torrent(r, name, torrent)
+    for fn, s in (("title.txt", title + "\n"), ("description.txt", text)):
+        with open(os.path.join(out, fn), "w", encoding="utf-8") as f:
+            f.write(s)
+
+    search = " ".join(x["artist"].split(" [")[0:1] + [x["album"]])
+    subprocess.Popen(["xdg-open", "https://rutracker.org/forum/tracker.php?nm=" + urllib.parse.quote(search)],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print(f"\nForum: {x['forum']}\nTorrent: {torrent}\nFirefox shows the rutracker search, to check the album is not there yet.")
+    subprocess.run(["wl-copy", title])
+    ask("The title is in the clipboard. Enter copies the description: ")
+    subprocess.run(["wl-copy", text])
+    ask("The description is in the clipboard. Enter copies the path of the .torrent: ")
+    subprocess.run(["wl-copy", torrent])
+    print(wait_for_rutracker(torrent, paths, since))
+
+
+def main():
+    bucket = option("bucket_dir")
+    if not bucket:
+        done("Set bucket_dir in cmus.", 1)
+    roots = [bucket, option("download_dir")]
+    keys = {key_of(f, roots) for f in a.files} - {None}
+    dirs = sorted({album_of(k) if isinstance(k, str) else k[0] for k in keys})
+    if not dirs:
+        done("No bucket tracks selected.", 1)
+    groups = [[d] for d in dirs]
+    if len(dirs) > 1:
+        print("Albums:\n  " + "\n  ".join(dirs))
+        if ask(f"One release with all {len(dirs)} albums? [y/N] ").lower() == "y":
+            groups = [dirs]
+    for g in groups:
+        release(bucket, g, os.path.join(DOWNLOADS, "rutracker"))
+    done("Done.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (Exception, SystemExit) as e:  # keep the window open to read what went wrong
+        if not (isinstance(e, SystemExit) and e.code in (None, 0)):
+            print(e if isinstance(e, SystemExit) else f"Error: {e!r}")
+            ask("Enter to close")
+        raise
