@@ -214,15 +214,17 @@ SCHEMA = {"type": "object", "properties": {k: {"type": "string", "description": 
           "required": list(FIELDS), "additionalProperties": False}
 
 
-def fill(messages):
-    """Claude's answer to messages (the facts, then corrections) as a dict of FIELDS."""
+def ask_claude(messages, fields):
+    """Claude's answer to messages, which it may look up on the web: the fields as a dict, or notes in words
+    when fields is False (with the answer format set, Claude tends to skip the search)."""
     load_env()
     client = anthropic.Anthropic()
+    fmt = {"format": {"type": "json_schema", "schema": SCHEMA}} if fields else {}
     while True:
         r = client.beta.messages.create(
             model=MODEL, max_tokens=16000, messages=messages,
             tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 5}],
-            output_config={"effort": "low", "format": {"type": "json_schema", "schema": SCHEMA}},
+            output_config={"effort": "low", **fmt},
             betas=["server-side-fallback-2026-07-01"], fallbacks="default")
         log_usage(r.usage)
         messages.append({"role": "assistant", "content": r.content})
@@ -230,7 +232,8 @@ def fill(messages):
             continue
         if r.stop_reason != "end_turn":
             raise RuntimeError(f"Claude did not answer ({r.stop_reason})")
-        return json.loads([b.text for b in r.content if b.type == "text"][-1])
+        text = [b.text for b in r.content if b.type == "text"]
+        return json.loads(text[-1]) if fields else "\n".join(text)
 
 
 class Release:
@@ -255,7 +258,7 @@ class Release:
         self.lossless = all(c in LOSSLESS for c in self.codecs)
         self.duration = sum(x["duration"] for x in t)
         mid = sorted(self.audio, key=lambda f: self.tracks[f]["duration"])[len(self.audio) // 2]
-        self.cutoff = 19000 if self.lossless else 16500
+        self.cutoff = 19000 if self.lossless else 17500
         self.drop = band_drop(os.path.join(mount, mid), self.cutoff)
 
     def codec(self):
@@ -450,13 +453,16 @@ rutracker's music forums (each has lossy and lossless subforums):
 <forums>
 {FORUMS}
 </forums>
-Fill in the fields of the topic. Search the web first (the release's official page, Discogs, RYM, Bandcamp):
-country, genres as RYM or Discogs give them, the official page, line-up and a few facts for "about"; prefer
-the tags where they say it. Write only what you found or what the files show; leave a field empty rather
-than guess. I may answer with corrections in my own words; then answer with all the fields again."""}]
+First look the release up on the web (its official page, Discogs, RYM, Bandcamp, the label): the artist's
+country, genres as RYM or Discogs give them, the official page, line-up and a few facts about the album.
+Answer with short notes of what you found and where."""}]
+    print("Claude is looking the album up...")
+    ask_claude(messages, False)
+    messages.append({"role": "user", "content": """Now fill in the fields of the topic. Prefer the tags where they
+say it; write only what you found or what the files show, and leave a field empty rather than guess. I may answer
+with corrections in my own words; then answer with all the fields again."""})
     while True:
-        print("Asking Claude...")
-        x = fill(messages)
+        x = ask_claude(messages, True)
         print("\n" + post(r, x) + "\nTitle: " + title_of(r, x) + f"\nForum: {x['forum']}")
         if x["notes"]:
             print("Claude: " + x["notes"])
@@ -466,6 +472,7 @@ than guess. I may answer with corrections in my own words; then answer with all 
         if not answer:
             break
         messages.append({"role": "user", "content": answer})
+        print("Asking Claude...")
 
     title = title_of(r, x)
     name = re.sub(r'[\\/:*?"<>|]', "_", f"{x['artist']} - {x['album']} ({x['year']}) [{r.codec()}]").strip()
