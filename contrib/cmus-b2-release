@@ -20,6 +20,7 @@ Needs python-libtorrent, python-anthropic, python-mutagen, python-requests, ffmp
 ANTHROPIC_API_KEY (in the environment or as ANTHROPIC_API_KEY=... in ~/.config/cmus-b2/env).
 """
 import argparse
+import concurrent.futures
 import curses
 import gzip
 import glob
@@ -223,8 +224,8 @@ CHANGES = {  # what Claude may change, when I ask it to
     "tag_edits": ("changes to the tags of the files, made in my library (the bucket, cmus and the phone get them): "
                   "a track file, or a folder for all the tracks in it; only when I ask for it",
                   {"path": "a track file or a folder, as in the facts", "tag": "the tag", "value": "its new value"}),
-    "renames": ("new names of folders or files inside the release only (the library keeps its names): the album "
-                "folders, a .cue file to match its audio, and so on; only when I ask for it",
+    "renames": ("new names of folders or files of the release, made in my library too (the album folders, a .cue "
+                "file to match its audio, and so on); only when I ask for it",
                 {"path": "a folder or file, as in the facts", "name": "its new name, without slashes"}),
 }
 SCHEMA = {"type": "object", "properties": {
@@ -271,9 +272,13 @@ class Release:
         self.audio = [f for f in self.files if os.path.splitext(f)[1].lower() in AUDIO_EXT]
         self.size = sum(os.path.getsize(os.path.join(mount, f)) for f in self.files)
         self.tracks = {}
-        for i, f in enumerate(self.audio, 1):
-            print(f"\r\x1b[KChecking {i}/{len(self.audio)}: {os.path.basename(f)}", end="", flush=True)
-            self.tracks[f] = probe(os.path.join(mount, f))
+        # 4 files at a time: faster over the mount, and arch overheats on all its cores
+        with concurrent.futures.ThreadPoolExecutor(4) as pool:
+            jobs = {pool.submit(probe, os.path.join(mount, f)): f for f in self.audio}
+            for i, job in enumerate(concurrent.futures.as_completed(jobs), 1):
+                print(f"\r\x1b[KChecking {i}/{len(self.audio)}: {os.path.basename(jobs[job])}", end="", flush=True)
+                self.tracks[jobs[job]] = job.result()
+        self.tracks = {f: self.tracks[f] for f in self.audio}
         print()
         t = list(self.tracks.values())
         self.codecs = sorted({x["codec"] for x in t})
@@ -416,17 +421,11 @@ def post(r, x, cover="ОБЛОЖКА", spectra=()):
     return "\n".join(lines) + "\n"
 
 
-def make_torrent(r, name, out, renames=()):
-    """The .torrent of the release's files under the folder name; renames ({path, name}) change the names of
-    folders or files inside the release only. Returns the map of the release's paths to the files."""
+def make_torrent(r, name, out):
+    """The .torrent of the release's files under the folder name. Returns the map of its paths to the files."""
     def inside(f):  # the file's path in the release: below the album folder, or from it for several albums
-        parts = f.split("/")
-        for x in renames:
-            p = x["path"].strip("/").split("/")
-            if parts[:len(p)] == p and x["name"] and "/" not in x["name"]:
-                parts[len(p) - 1] = x["name"]
         d = next(d for d in r.dirs if f.startswith(d + "/"))
-        return "/".join(parts[d.count("/") + (1 if len(r.dirs) == 1 else 0):])
+        return "/".join(f.split("/")[d.count("/") + (1 if len(r.dirs) == 1 else 0):])
 
     paths = {os.path.join(name, inside(f)): f for f in r.files}
     with tempfile.TemporaryDirectory() as tmp:  # the release as links to the files on the mount
@@ -519,10 +518,10 @@ def show_changes(r, x):
                 os.path.relpath(e["path"].strip("/"), r.dirs[0])
             what = f"{where} ({len(fs)} tracks)" if len(fs) > 1 else where
             print(wrap(f"{what}: {e['tag']} {old}{' / '.join(w or '—' for w in was)}\x1b[0m → {new}{e['value']}\x1b[0m"))
-    names = [n for n in x["renames"] if n["name"] and any(f == n["path"].strip("/") or f.startswith(n["path"].strip("/") + "/")
+    names = [n for n in x["renames"] if n["name"] and "/" not in n["name"] and any(f == n["path"].strip("/") or f.startswith(n["path"].strip("/") + "/")
                                                        for f in r.files)]
     if names:
-        print("\n\x1b[1mNames in the release only\x1b[0m (the library keeps its names):")
+        print("\n\x1b[1mRenames in the library\x1b[0m (likes, playlists, history and ratings move along):")
         for n in names:
             print(wrap(f"{old}{os.path.basename(n['path'].strip('/'))}\x1b[0m → {new}{n['name']}\x1b[0m"))
     return edits, names
@@ -541,6 +540,23 @@ def apply_edits(r, edits):
     for x in plan:
         r.tracks[x["path"]][x["tag"]] = x["value"][:4] if x["tag"] == "date" else x["value"]
     r.size = sum(os.path.getsize(os.path.join(r.mount, f)) for f in r.files)
+
+
+def apply_renames(r, names):
+    """Renames the folders and files in the library (contrib/cmus-b2-rename) and in the release."""
+    pairs = [(n["path"].strip("/"), os.path.join(os.path.dirname(n["path"].strip("/")), n["name"])) for n in names]
+    here = os.path.dirname(os.path.realpath(__file__))
+    if subprocess.run([os.path.join(here, "cmus-b2-rename"), *[x for pair in pairs for x in pair]]).returncode:
+        raise SystemExit("Not renamed.")
+
+    def moved(f):
+        for old, new in pairs:
+            if f == old or f.startswith(old + "/"):
+                return new + f[len(old):]
+        return f
+
+    r.dirs, r.files, r.audio = [moved(d) for d in r.dirs], [moved(f) for f in r.files], [moved(f) for f in r.audio]
+    r.tracks = {moved(f): x for f, x in r.tracks.items()}
 
 
 def publish(r, mount, work, out_root):
@@ -582,6 +598,8 @@ with the changes I asked for in tag_edits and renames (fill the fields as they w
 
     if edits:
         apply_edits(r, edits)
+    if names:
+        apply_renames(r, names)
     title = title_of(r, x)
     name = re.sub(r'[\\/:*?"<>|]', "_", f"{x['artist']} - {x['album']} ({x['year']}) [{r.codec()}]").strip()
     out = os.path.join(out_root, name)
@@ -591,7 +609,7 @@ with the changes I asked for in tag_edits and renames (fill the fields as they w
     text = post(r, x, images[0][0] if cover else "ОБЛОЖКА", images[1:] if cover else images)
     since = time.time()
     torrent = os.path.join(out, title.replace("/", "_") + ".torrent")
-    paths = make_torrent(r, name, torrent, names)
+    paths = make_torrent(r, name, torrent)
     for fn, s in (("title.txt", title + "\n"), ("description.txt", text)):
         with open(os.path.join(out, fn), "w", encoding="utf-8") as f:
             f.write(s)
