@@ -66,11 +66,24 @@ def album_id(key):  # as make_catalog.py
     return hashlib.sha1(key.encode("utf-8", "surrogateescape")).hexdigest()[:16]
 
 
+def kind(path):
+    """"file", "folder" or None for a path under music/ (a bucket has every folder, so an empty one is none)."""
+    r = subprocess.run(["rclone", "lsjson", "--stat", f"{a.remote}/music/{path}"], capture_output=True)
+    if r.returncode:
+        return None
+    if not json.loads(r.stdout)["IsDir"]:
+        return "file"
+    r = subprocess.run(["rclone", "lsf", "-R", "--files-only", f"{a.remote}/music/{path}"], capture_output=True, text=True)
+    return "folder" if r.stdout.strip() else None
+
+
 mount = option("bucket_dir") or os.path.expanduser("~/b2music")
+kinds = {}
 for old, new in pairs:
-    if subprocess.run(["rclone", "lsjson", "--stat", f"{a.remote}/music/{new}"], capture_output=True).returncode == 0:
+    if kind(new):
         sys.exit(f"{new} is already in the bucket.")
-    if subprocess.run(["rclone", "lsjson", "--stat", f"{a.remote}/music/{old}"], capture_output=True).returncode:
+    kinds[old] = kind(old)
+    if not kinds[old]:
         sys.exit(f"{old} is not in the bucket.")
 
 catalog = json.loads(gzip.decompress(cat("catalog.json.gz")))
@@ -116,8 +129,7 @@ if input("Rename? [y/N] ").strip().lower() != "y":
 
 print("Moving the files in the bucket...")
 for old, new in pairs:
-    folder = json.loads(rclone("lsjson", "--stat", f"{a.remote}/music/{old}", capture_output=True).stdout)["IsDir"]
-    if folder:
+    if kinds[old] == "folder":
         rclone("move", f"{a.remote}/music/{old}", f"{a.remote}/music/{new}", "--transfers", "8")
         subprocess.run(["rclone", "move", f"{a.remote}/lite/{old}", f"{a.remote}/lite/{new}"], capture_output=True)
     else:
