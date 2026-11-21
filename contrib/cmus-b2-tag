@@ -10,6 +10,8 @@ cmus library refreshed; the copies made only for tagging are removed.
 CUE images are left out: Picard tags them as one file. Keep renaming and moving
 files off in Picard's options: the bucket knows the files by their paths, so
 nothing is uploaded when Picard renamed a file.
+With --edits FILE.json (a list of {"path": bucket path, "tag": easy tag name, "value": ...}) the tags are
+written without Picard and the window does not wait for Enter at the end (contrib/cmus-b2-release uses it).
 """
 import argparse
 import gzip
@@ -20,6 +22,8 @@ import subprocess
 import sys
 import tempfile
 
+import mutagen
+
 from cmus_b2 import REMOTE, key_of, option, picard
 
 p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -27,13 +31,17 @@ p.add_argument("files", nargs="+", help="files of the selected tracks, as cmus p
 p.add_argument("--music", default="~/Music")
 p.add_argument("--remote", default=REMOTE, help="rclone path of the bucket")
 p.add_argument("--tools", default="~/projects/b2-player/tools", help="sync-music.sh and publish-catalog.sh")
+p.add_argument("--edits", help="JSON list of tag edits to write instead of opening Picard")
 a = p.parse_args()
 music = os.path.expanduser(a.music)
 tools = os.path.expanduser(a.tools)
 
 
 def done(msg, code=0):
-    input(f"{msg} Enter closes the window.")
+    if a.edits:
+        print(msg)
+    else:
+        input(f"{msg} Enter closes the window.")
     sys.exit(code)
 
 
@@ -69,7 +77,14 @@ if missing:
         subprocess.run(["rclone", "copy", f"{a.remote}/music", music, "--files-from-raw", lst.name,
                         "--transfers", "8", "--progress"], check=True)
 before = stamps(dirs)
-picard([os.path.join(music, x) for x in paths])
+if a.edits:
+    with open(a.edits, encoding="utf-8") as f:
+        for e in json.load(f):
+            m = mutagen.File(os.path.join(music, e["path"]), easy=True)
+            m[e["tag"]] = e["value"]
+            m.save()
+else:
+    picard([os.path.join(music, x) for x in paths])
 after = stamps(dirs)
 changed = sorted(x for x in after if after[x] != before.get(x))
 gone = sorted(set(before) - set(after))

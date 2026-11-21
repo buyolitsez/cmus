@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""Rename folders or files of the bucket's music/ and keep everything that refers to them.
+  cmus-b2-rename OLD NEW [OLD NEW ...]
+The files are moved in the bucket (server-side copies; the old names are hidden, and the lifecycle rule
+removes them after 30 days) with their light copies in lite/, and the local copies in the music folder and
+download_dir are renamed. The catalog gets the new paths and the album ids make_catalog.py gives the new
+folders, with their covers and lyrics. The likes, playlists, history, ratings and the shared queue in state/
+get the new ids, and state/renames.tsv lists the renames, from which the phone renames its own copies of
+them. Then cmus's playlists get the new paths and cmus-b2 reloads the library.
+Shows what changes and asks first.
+"""
+import argparse
+import gzip
+import hashlib
+import io
+import json
+import os
+import re
+import subprocess
+import sys
+
+import mutagen
+
+from cmus_b2 import REMOTE, option
+
+p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+p.add_argument("paths", nargs="+", help="pairs of an old and a new path under music/")
+p.add_argument("--remote", default=REMOTE, help="rclone path of the bucket")
+p.add_argument("--music", default="~/Music")
+a = p.parse_args()
+if len(a.paths) % 2:
+    sys.exit("Give pairs of an old and a new path.")
+pairs = [(o.strip("/"), n.strip("/")) for o, n in zip(a.paths[::2], a.paths[1::2]) if o.strip("/") != n.strip("/")]
+DISC_DIR = re.compile(r"^\s*(cd|disc|disk|диск)\s*\d+\s*$", re.I)  # as make_catalog.py folds disc folders
+
+
+def rclone(*args, **kw):
+    return subprocess.run(["rclone", *args], check=True, **kw)
+
+
+def cat(name):
+    r = subprocess.run(["rclone", "cat", f"{a.remote}/{name}"], capture_output=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def moved(s):
+    """A path or a track id (path#start) with the renames applied."""
+    for old, new in pairs:
+        if s == old or s.startswith(old + "/") or s.startswith(old + "#"):
+            return new + s[len(old):]
+    return s
+
+
+def remap(x):
+    """Every path in a JSON value, values and keys."""
+    if isinstance(x, str):
+        return moved(x)
+    if isinstance(x, list):
+        return [remap(v) for v in x]
+    if isinstance(x, dict):
+        return {moved(k): remap(v) for k, v in x.items()}
+    return x
+
+
+def album_id(key):  # as make_catalog.py
+    return hashlib.sha1(key.encode("utf-8", "surrogateescape")).hexdigest()[:16]
+
+
+def kind(path):
+    """"file", "folder" or None for a path under music/ (a bucket has every folder, so an empty one is none)."""
+    r = subprocess.run(["rclone", "lsjson", "--stat", f"{a.remote}/music/{path}"], capture_output=True)
+    if r.returncode:
+        return None
+    if not json.loads(r.stdout)["IsDir"]:
+        return "file"
+    r = subprocess.run(["rclone", "lsf", "-R", "--files-only", f"{a.remote}/music/{path}"], capture_output=True, text=True)
+    return "folder" if r.stdout.strip() else None
+
+
+mount = option("bucket_dir") or os.path.expanduser("~/b2music")
+kinds = {}
+for old, new in pairs:
+    if kind(new):
+        sys.exit(f"{new} is already in the bucket.")
+    kinds[old] = kind(old)
+    if not kinds[old]:
+        sys.exit(f"{old} is not in the bucket.")
+
+catalog = json.loads(gzip.decompress(cat("catalog.json.gz")))
+albums = [al for al in catalog["albums"] if any(moved(t["path"]) != t["path"] for t in al["tracks"])]
+ids = {}  # old album id -> new one
+for al in albums:
+    first = al["tracks"][0]["path"]
+    d = os.path.dirname(first)
+    group = os.path.dirname(d) if DISC_DIR.match(os.path.basename(d)) else d
+    try:
+        tag = (mutagen.File(os.path.join(mount, first), easy=True) or {}).get("album", [""])[0]
+    except mutagen.MutagenError:
+        tag = None
+    # an id made some other way (a CUE image's album, joined discs) stays as it is
+    if tag is not None and album_id(f"{group}\0{tag}") == al["id"]:
+        ids[al["id"]] = album_id(f"{moved(group)}\0{tag}")
+
+state = {}
+for name in ("likes.json", "playlists.json", "now-playing.json", "ratings.json"):
+    raw = cat(f"state/{name}")
+    if raw is not None:
+        state[name] = json.loads(raw)
+history = (cat("state/history.tsv") or b"").decode("utf-8")
+new_state = {k: remap(v) for k, v in state.items() if k != "ratings.json"}
+if "ratings.json" in state:
+    new_state["ratings.json"] = {**state["ratings.json"], "albums": {
+        ids.get(k, k): v for k, v in state["ratings.json"].get("albums", {}).items()}}
+new_history = "".join(f"{t}\t{moved(i)}\n" for t, _, i in (line.partition("\t") for line in history.splitlines()) if i)
+
+print("Renames:")
+for old, new in pairs:
+    print(f"  {old}\n  → {new}")
+tracks = sum(moved(t["path"]) != t["path"] for al in albums for t in al["tracks"])
+print(f"\n{tracks} tracks of {len(albums)} albums get new paths, {len(ids)} albums new ids.")
+likes = state.get("likes.json", {})
+print(f"Likes: {sum(moved(i) != i for k in ('added', 'removed') for i in likes.get(k, []))} entries")
+print(f"Playlists: {sum(moved(i) != i for pl in state.get('playlists.json', {}).get('playlists', []) for i in pl['tracks'])} entries")
+print(f"History: {sum(moved(line.partition(chr(9))[2]) != line.partition(chr(9))[2] for line in history.splitlines())} plays")
+print(f"Ratings: {sum(k in ids for k in state.get('ratings.json', {}).get('albums', {}))} albums")
+print("The phone renames its downloads and its own copies of these after its next sync.")
+if input("Rename? [y/N] ").strip().lower() != "y":
+    sys.exit("Nothing renamed.")
+
+print("Moving the files in the bucket...")
+for old, new in pairs:
+    if kinds[old] == "folder":
+        rclone("move", f"{a.remote}/music/{old}", f"{a.remote}/music/{new}", "--transfers", "8")
+        subprocess.run(["rclone", "move", f"{a.remote}/lite/{old}", f"{a.remote}/lite/{new}"], capture_output=True)
+    else:
+        rclone("moveto", f"{a.remote}/music/{old}", f"{a.remote}/music/{new}")
+        subprocess.run(["rclone", "moveto", f"{a.remote}/lite/{old}.opus", f"{a.remote}/lite/{new}.opus"],
+                       capture_output=True)
+    for root in {os.path.expanduser(a.music), option("download_dir")} - {""}:
+        if os.path.exists(os.path.join(root, old)):
+            os.renames(os.path.join(root, old), os.path.join(root, new))
+
+print("Rewriting the catalog...")
+out = os.path.expanduser(os.environ.get("B2_PLAYER_OUT", "~/.cache/b2-player"))  # make_catalog.py's covers and lyrics
+for al in albums:
+    old_id = al["id"]
+    al["dir"] = moved(al["dir"])
+    for t in al["tracks"]:
+        t["path"] = moved(t["path"])
+    new_id = ids.get(old_id, old_id)
+    if new_id != old_id:
+        al["id"] = new_id
+        if al.get("cover"):
+            al["cover"] = f"covers/{new_id}.jpg"
+            subprocess.run(["rclone", "copyto", f"{a.remote}/covers/{old_id}.jpg", f"{a.remote}/covers/{new_id}.jpg"])
+            if os.path.exists(f"{out}/covers/{old_id}.jpg"):
+                os.replace(f"{out}/covers/{old_id}.jpg", f"{out}/covers/{new_id}.jpg")
+    lyrics = cat(f"lyrics/{old_id}.json")
+    if lyrics is not None:
+        text = json.dumps(remap(json.loads(lyrics)), ensure_ascii=False)
+        rclone("rcat", f"{a.remote}/lyrics/{new_id}.json", input=text.encode("utf-8"))
+        os.makedirs(f"{out}/lyrics", exist_ok=True)
+        with open(f"{out}/lyrics/{new_id}.json", "w", encoding="utf-8") as f:
+            f.write(text)
+        if new_id != old_id and os.path.exists(f"{out}/lyrics/{old_id}.json"):
+            os.remove(f"{out}/lyrics/{old_id}.json")
+buf = io.BytesIO()
+with gzip.open(buf, "wt", encoding="utf-8") as f:
+    json.dump(catalog, f, ensure_ascii=False, separators=(",", ":"))
+rclone("rcat", f"{a.remote}/catalog.json.gz", input=buf.getvalue())
+
+print("Updating the likes, playlists, history, ratings and the queue...")
+for name, value in new_state.items():
+    if value != state[name]:
+        rclone("rcat", f"{a.remote}/state/{name}", input=json.dumps(value, ensure_ascii=False, indent=1).encode("utf-8"))
+if new_history != history:
+    rclone("rcat", f"{a.remote}/state/history.tsv", input=new_history.encode("utf-8"))
+listed = (cat("state/renames.tsv") or b"").decode("utf-8")
+rclone("rcat", f"{a.remote}/state/renames.tsv", input=(listed + "".join(f"{o}\t{n}\n" for o, n in pairs)).encode("utf-8"))
+
+# the mount keeps its directory listings a year (see rclone-b2music.service)
+for d in {os.path.dirname(x) for pair in pairs for x in pair}:
+    subprocess.run(["rclone", "rc", "vfs/refresh", f"dir={d}"], capture_output=True)
+playlists = os.path.expanduser("~/.config/cmus/playlists")
+for name in os.listdir(playlists) if os.path.isdir(playlists) else []:
+    with open(os.path.join(playlists, name), encoding="utf-8", errors="surrogateescape") as f:
+        lines = f.read().splitlines()
+    roots = [r.rstrip("/") + "/" for r in (mount, option("download_dir")) if r]
+    new_lines = [next((r + moved(x[len(r):]) for r in roots if x.startswith(r)), x) for x in lines]
+    if new_lines != lines:
+        with open(os.path.join(playlists, name), "w", encoding="utf-8", errors="surrogateescape") as f:
+            f.write("\n".join(new_lines) + "\n")
+here = os.path.dirname(os.path.realpath(__file__))
+if subprocess.run([os.path.join(here, "cmus-b2")]).returncode:
+    print("cmus-b2 failed: the cmus library is not refreshed, run contrib/cmus-b2 later")
+print(f"Renamed {tracks} tracks.")
