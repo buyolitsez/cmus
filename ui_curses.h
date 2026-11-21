@@ -56,6 +56,7 @@ extern int using_utf8;
 void update_titleline(void);
 void update_statusline(void);
 void update_filterline(void);
+void set_remote_now(int pos, int dur, int playing, const char *text);
 void update_colors(void);
 void update_full(void);
 void update_size(void);
