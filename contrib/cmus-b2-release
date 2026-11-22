@@ -170,8 +170,8 @@ def upload_images(paths):
                 r = s.post("https://api.imageban.ru/v1", headers={"Authorization": f"Bearer {key}"}, timeout=120,
                            data={"p_res": "300"}, files={"image": (os.path.basename(path), f)})
             r.raise_for_status()
-            link = r.json()["data"][0]["link"]
-            urls.append((link, link.replace("/out/", "/thumbs/")))
+            link = r.json()["data"]["link"]
+            urls.append((link, link.replace("/out/", "/thumbs/")))  # the thumbnail of p_res px
         return urls
     csrf = re.search(r'content="([^"]+)" name="csrf-token"', s.get("https://imgbox.com/", timeout=30).text).group(1)
     h = {"X-CSRF-Token": csrf, "X-Requested-With": "XMLHttpRequest"}
@@ -709,13 +709,13 @@ with the changes I asked for in tag_edits, renames and deletions (fill the field
     latin = re.search(r"\[(.+)\]$", x["artist"])  # rutracker's search finds the Latin name better
     search = f"{latin.group(1) if latin else x['artist']} {x['album']}"
     subprocess.Popen(["xdg-open", "https://rutracker.org/forum/tracker.php?nm=" + urllib.parse.quote(search)],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print(f"\nForum: {x['forum']}\nTorrent: {torrent}\nFirefox shows the rutracker search, to check the album is not there yet.")
-    subprocess.run(["wl-copy", title])
+    subprocess.run(["wl-copy", title], stdin=subprocess.DEVNULL)
     ask("The title is in the clipboard. Enter copies the description: ")
-    subprocess.run(["wl-copy", text])
+    subprocess.run(["wl-copy", text], stdin=subprocess.DEVNULL)
     ask("The description is in the clipboard. Enter copies the path of the .torrent: ")
-    subprocess.run(["wl-copy", torrent])
+    subprocess.run(["wl-copy", torrent], stdin=subprocess.DEVNULL)
     print(wait_for_rutracker(torrent, paths, since))
 
 
