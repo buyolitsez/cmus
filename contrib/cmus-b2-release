@@ -170,8 +170,8 @@ def upload_images(paths):
                 r = s.post("https://api.imageban.ru/v1", headers={"Authorization": f"Bearer {key}"}, timeout=120,
                            data={"p_res": "300"}, files={"image": (os.path.basename(path), f)})
             r.raise_for_status()
-            link = r.json()["data"][0]["link"]
-            urls.append((link, link.replace("/out/", "/thumbs/")))
+            link = r.json()["data"]["link"]
+            urls.append((link, link.replace("/out/", "/thumbs/")))  # the thumbnail of p_res px
         return urls
     csrf = re.search(r'content="([^"]+)" name="csrf-token"', s.get("https://imgbox.com/", timeout=30).text).group(1)
     h = {"X-CSRF-Token": csrf, "X-Requested-With": "XMLHttpRequest"}
