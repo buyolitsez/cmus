@@ -583,7 +583,8 @@ def wrap(text, first="  • ", rest="    "):
 
 def section(name):
     width = max(40, shutil.get_terminal_size().columns - 2)
-    print(f"\n\x1b[1;36m── {name} " + "─" * max(0, width - len(name) - 4) + "\x1b[0m")
+    head = f"── {name} " if name else ""
+    print(f"\n\x1b[1;36m{head}" + "─" * (width - len(head)) + "\x1b[0m")
 
 
 def show_draft(r, x, before=None, title="Release"):
