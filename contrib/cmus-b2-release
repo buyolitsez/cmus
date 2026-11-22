@@ -228,8 +228,8 @@ def log_usage(u):
 FIELDS = {
     "artist": "the artist as in the topic: original script first, then the Latin name in square brackets when they "
               "differ, e.g. '岡田拓郎 [Takuro Okada]' or 'Кино'",
-    "album": "the album title; for several albums 'Collection, N Albums' (as '核P-MODEL - Collection, 3 Albums'), "
-             "unless I ask for another title",
+    "album": "the album title, without the artist; for several albums 'Collection, N Albums' (the topic title is "
+             "then like '核P-MODEL - Collection, 3 Albums - 2004-2018'), unless I ask for another title",
     "year": "year of release, or a range for several albums",
     "genre": "2-4 genres in English, comma-separated, e.g. 'Chamber Jazz, Ambient, New Age'",
     "country": "the artist's country in Russian, e.g. 'Япония'",
@@ -750,7 +750,7 @@ put in additions straight away: I see the changes before they are made.""" + (
         print("\nThe draft from the last time (the files did not change):")
     else:
         x = ask_claude(messages, True)
-    answer, points, images = "", [], {}  # images: the urls of the uploaded ones, by file
+    answer, points, images, out = "", [], {}, None  # images: the urls of the uploaded ones, by file
     while True:  # the draft until accepted, and again when I write to Claude after accepting it
         if not answer:
             save_draft(key, facts=facts, fields=x)
@@ -789,6 +789,8 @@ put in additions straight away: I see the changes before they are made.""" + (
             apply_renames(r, names)
         title = title_of(r, x)
         name = re.sub(r'[\\/:*?"<>|]', "_", f"{x['artist']} - {x['album']} ({x['year']}) [{r.codec()}]").strip()
+        if out and out != os.path.join(out_root, name):  # the files of the draft before
+            shutil.rmtree(out, ignore_errors=True)
         out = os.path.join(out_root, name)
         os.makedirs(out, exist_ok=True)
         todo = [f for f in ([cover] if cover else []) + spectra if f not in images]
