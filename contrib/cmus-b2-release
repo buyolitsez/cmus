@@ -750,7 +750,7 @@ put in additions straight away: I see the changes before they are made.""" + (
         print("\nThe draft from the last time (the files did not change):")
     else:
         x = ask_claude(messages, True)
-    answer, points, images, out = "", [], {}, None  # images: the urls of the uploaded ones, by file
+    answer, points, images, out, torrent = "", [], {}, None, None  # images: the urls of the uploaded ones, by file
     while True:  # the draft until accepted, and again when I write to Claude after accepting it
         if not answer:
             save_draft(key, facts=facts, fields=x)
@@ -799,6 +799,8 @@ put in additions straight away: I see the changes before they are made.""" + (
             images.update(zip(todo, upload_images(todo)))
         text = post(r, x, images[cover][0] if cover else "ОБЛОЖКА", [images[f] for f in spectra])
         since = time.time()
+        if torrent and os.path.exists(torrent):  # of the draft before
+            os.remove(torrent)
         torrent = os.path.join(out, title.replace("/", "_") + ".torrent")
         paths = make_torrent(r, name, torrent)
         for fn, s in (("title.txt", title + "\n"), ("description.txt", text)):
