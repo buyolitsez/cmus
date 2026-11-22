@@ -253,7 +253,7 @@ def ask_claude(messages, fields):
     while True:
         r = client.beta.messages.create(
             model=MODEL, max_tokens=16000, messages=messages,
-            tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 5}],
+            tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 30}],  # several albums take 15-20
             output_config={"effort": "low", **fmt},
             betas=["server-side-fallback-2026-07-01"], fallbacks="default")
         log_usage(r.usage)
