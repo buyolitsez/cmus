@@ -122,7 +122,9 @@ new_state = {k: remap(v) for k, v in state.items() if k != "ratings.json"}
 if "ratings.json" in state:
     new_state["ratings.json"] = {**state["ratings.json"], "albums": {
         ids.get(k, k): v for k, v in state["ratings.json"].get("albums", {}).items()}}
-new_history = "".join(f"{t}\t{moved(i)}\n" for t, _, i in (line.partition("\t") for line in history.splitlines()) if i)
+# "ms<TAB>track id", maybe "<TAB>device" after it
+plays = [line.split("\t") for line in history.splitlines()]
+new_history = "".join("\t".join([f[0], moved(f[1]), *f[2:]]) + "\n" for f in plays if len(f) > 1 and f[1])
 
 print("Renames:")
 for old, new in pairs:
@@ -132,7 +134,7 @@ print(f"\n{tracks} tracks of {len(albums)} albums get new paths, {len(ids)} albu
 likes = state.get("likes.json", {})
 print(f"Likes: {sum(moved(i) != i for k in ('added', 'removed') for i in likes.get(k, []))} entries")
 print(f"Playlists: {sum(moved(i) != i for pl in state.get('playlists.json', {}).get('playlists', []) for i in pl['tracks'])} entries")
-print(f"History: {sum(moved(line.partition(chr(9))[2]) != line.partition(chr(9))[2] for line in history.splitlines())} plays")
+print(f"History: {sum(moved(f[1]) != f[1] for f in plays if len(f) > 1)} plays")
 print(f"Ratings: {sum(k in ids for k in state.get('ratings.json', {}).get('albums', {}))} albums")
 print("The phone renames its downloads and its own copies of these after its next sync.")
 if input("Rename? [y/N] ").strip().lower() != "y":

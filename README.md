@@ -129,7 +129,8 @@ tracks played before, the current one, the ones after it and the position to `st
 and track change, as the app does, and the app takes that queue over. While cmus does not play, its status line shows
 what the phone plays, with the position moving on (`:remote-now`, fed by `cmus-b2-now --watch`), and play on the
 track cmus stands paused on goes on with the phone's queue and position instead; choosing another track plays that one. `:bind common R shell <repo>/contrib/cmus-b2-now --resume`
-takes the phone's queue over at once.
+takes the phone's queue over at once. Tracks heard there for half their length or 4 minutes go into
+`state/history.tsv` with `mac` or `arch` after the track id, next to the phone's plays marked `phone`.
 
 Assistant: `:bind common O shell footclient -N <repo>/contrib/cmus-b2-ask` opens a chat with Claude, the same assistant
 as in the app (b2-player's `core/`): it finds and plays music in this cmus, answers about listening history and changes
