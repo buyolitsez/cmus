@@ -725,7 +725,8 @@ album, since the search results do not show the genres and credits. RYM lets not
 results, and say so if they are not there.
 Answer with short notes of what you found and where."""}]
     key = "\n".join(r.dirs)  # the draft of these albums; its fields only while the facts are the same
-    facts = hashlib.sha1(r.facts().encode("utf-8")).hexdigest()
+    # the files Claude can add count too: a cover downloaded since the last draft makes a new one
+    facts = hashlib.sha1((r.facts() + downloads()).encode("utf-8")).hexdigest()
     draft = load_cache()["drafts"].get(key, {})
     seen = draft.get("seen", [])  # the points of the notes I left as they are: not shown again
     if draft.get("research"):
