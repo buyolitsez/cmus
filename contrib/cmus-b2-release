@@ -675,8 +675,9 @@ rutracker's music forums (each has lossy and lossless subforums):
 {FORUMS}
 </forums>
 First look the release up on the web (its official page, Discogs, RYM, Bandcamp, the label): the artist's
-country, genres as RYM or Discogs give them, the official page, line-up and a few facts about the album. Read the
-Discogs pages you find with the discogs tool. RYM lets nothing read its pages: take its genres from the search
+country, genres as RYM or Discogs give them, the official page, line-up and a few facts about the album. When the
+search has given the Discogs links of the albums, call the discogs tool on the master (or release) link of each
+album, since the search results do not show the genres and credits. RYM lets nothing read its pages: take its genres from the search
 results, and say so if they are not there.
 Answer with short notes of what you found and where."""}]
     key = "\n".join(r.dirs)  # the draft of these albums; its fields only while the facts are the same
