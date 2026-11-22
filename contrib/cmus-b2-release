@@ -551,6 +551,7 @@ def apply_renames(r, names):
     """Renames the folders and files in the library (contrib/cmus-b2-rename) and in the release."""
     pairs = [(n["path"].strip("/"), os.path.join(os.path.dirname(n["path"].strip("/")), n["name"])) for n in names]
     here = os.path.dirname(os.path.realpath(__file__))
+    print(f"\nRenaming {len(pairs)} folders and files in the library...", flush=True)
     if subprocess.run([os.path.join(here, "cmus-b2-rename"), *[x for pair in pairs for x in pair]]).returncode:
         raise SystemExit("Not renamed.")
 
