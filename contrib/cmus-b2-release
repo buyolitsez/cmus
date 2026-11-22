@@ -529,16 +529,16 @@ def show_changes(r, x):
             print(wrap(f"{what}: {e['tag']} {old}{' / '.join(w or '—' for w in was)}\x1b[0m → {new}{e['value']}\x1b[0m"))
     names = [n for n in x["renames"] if n["name"] and "/" not in n["name"] and any(f == n["path"].strip("/") or f.startswith(n["path"].strip("/") + "/")
                                                        for f in r.files)]
+    gone = sorted({d["path"].strip("/") for d in x["deletions"]} & (set(r.files) - set(r.audio)))
+    names = [n for n in names if n["path"].strip("/") not in gone]
     if names:
         print("\n\x1b[1mRenames in the library\x1b[0m (likes, playlists, history and ratings move along):")
         for n in names:
             print(wrap(f"{old}{os.path.basename(n['path'].strip('/'))}\x1b[0m → {new}{n['name']}\x1b[0m"))
-    gone = sorted({d["path"].strip("/") for d in x["deletions"]} & (set(r.files) - set(r.audio)))
     if gone:
         print("\n\x1b[1mDelete from the library\x1b[0m (the bucket keeps them hidden for 30 days):")
         for f in gone:
             print(wrap(f"{old}{f.removeprefix(os.path.commonpath(r.dirs) + '/')}\x1b[0m"))
-    names = [n for n in names if n["path"].strip("/") not in gone]
     return edits, names, gone
 
 
