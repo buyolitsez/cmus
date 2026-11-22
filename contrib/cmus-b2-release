@@ -449,10 +449,15 @@ class Release:
                         lines.append(f"  refers to {ref}: {'there' if there else 'NOT in the folder'}")
         return "\n".join(lines)
 
-    def tracklist(self):
+    def album(self, d):
+        """The tracks of an album folder of the release (with its disc folders)."""
+        return [f for f in self.audio if f.startswith(d + "/")]
+
+    def tracklist(self, audio=None):
+        """The tracks with their lengths, with a heading per album (with its year, when there are several) or disc."""
         out = []
         groups = {}
-        for f in self.audio:  # an album, or a disc of it, per group
+        for f in audio or self.audio:  # an album, or a disc of it, per group
             groups.setdefault(os.path.dirname(f), []).append(f)
         for d, fs in groups.items():
             if len(groups) > 1:
@@ -461,7 +466,7 @@ class Release:
                 if x["date"] and len(self.dirs) > 1:
                     head += f" ({x['date']})"
                 if DISC_DIR.match(os.path.basename(d)):
-                    head += " — " + os.path.basename(d)
+                    head = os.path.basename(d) if audio else head + " — " + os.path.basename(d)  # audio: one album
                 out.append(f"\n[b]{head}[/b]")
             for i, f in enumerate(fs, 1):
                 x = self.tracks[f]
@@ -469,10 +474,11 @@ class Release:
                 out.append(f"{i} {title} [{mmss(x['duration'])}]")
         return "\n".join(out).strip("\n")
 
-    def quality(self):
+    def quality(self, audio=None):
         rows = []
-        width = max(len(os.path.basename(f)) for f in self.audio)
-        for f in self.audio:
+        audio = audio or self.audio
+        width = max(len(os.path.basename(f)) for f in audio)
+        for f in audio:
             x = self.tracks[f]
             bits = f"{x['bits']} bit  " if self.lossless and x["bits"] else ""
             check = "flac -t OK" if x["codec"] == "flac" and not x["errors"] else ""
@@ -488,28 +494,58 @@ def title_of(r, x):
     return f"({x['genre']}) {web}{x['artist']} - {x['album']} - {x['year']}, {r.codec()}{rip}, {r.bitrate()}"
 
 
-def post(r, x, cover="ОБЛОЖКА", spectra=()):
+def albums_word(n):
+    return "альбом" if n % 10 == 1 and n % 100 != 11 else \
+        "альбома" if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else "альбомов"
+
+
+def post(r, x, cover="ОБЛОЖКА", spectra=(), covers=()):
+    """The BBCode of the topic. Several albums get Nikolai's layout of a collection: the fields of all of them,
+    then a spoiler per album with its cover (covers, in the order of r.dirs), length and tracklist."""
     scans = len([f for f in r.files if os.path.splitext(f)[1].lower() in IMAGE_EXT]) > len(r.dirs)
-    lines = [f"[size=24]{x['artist']} / {x['album']}[/size]", "", f"[img=right]{cover}[/img]", "",
-             f"[b]Жанр[/b]: {x['genre']}",
-             f"[b]Страна исполнителя (группы)[/b]: {x['country']}",
-             f"[b]Год издания[/b]: {x['year']}",
-             f"[b]Аудиокодек[/b]: {r.codec()}",
-             "[b]Тип рипа[/b]: tracks",
-             f"[b]Битрейт аудио[/b]: {r.bitrate()}",
-             f"[b]Характеристики[/b]: {r.specs()}",
-             f"[b]Продолжительность[/b]: {hhmmss(r.duration)}",
-             f"[b]Размер раздачи[/b]: {r.size / 2**20:.1f} MB",
-             "[b]Источник[/b]: " + (f"[url={x['source_url']}]{'WEB' if x['web'] == 'yes' else 'официальная страница'}[/url]"
-                                     if x["source_url"] else "WEB" if x["web"] == "yes" else "—"),
-             f"[b]Наличие сканов в содержимом раздачи[/b]: {'да' if scans else 'нет'}",
-             "[b]Треклист[/b]:", r.tracklist(), "",
-             '[spoiler="Скриншот проверки качества материала"]', "[code]", r.quality(), "[/code]"]
+    source = (f"[url={x['source_url']}]{'WEB' if x['web'] == 'yes' else 'официальная страница'}[/url]"
+              if x["source_url"] else "WEB" if x["web"] == "yes" else "")
+    many = len(r.dirs) > 1
+    lines = [f"[size=24]{x['artist']} {'-' if many else '/'} {x['album']}[/size]", "", f"[img=right]{cover}[/img]", ""]
+    if many:
+        lines += [f"Альбомография ({len(r.dirs)} {albums_word(len(r.dirs))}).", ""]
+    lines += [f"[b]Жанр[/b]: {x['genre']}",
+              f"[b]Страна исполнителя (группы)[/b]: {x['country']}",
+              f"[b]Год издания[/b]: {x['year']}",
+              f"[b]Аудиокодек[/b]: {r.codec()}",
+              "[b]Тип рипа[/b]: tracks",
+              f"[b]Битрейт аудио[/b]: {r.bitrate()}",
+              f"[b]Характеристики[/b]: {r.specs()}",
+              f"[b]Продолжительность[/b]: {hhmmss(r.duration)}"]
+    if not many:
+        lines.append(f"[b]Размер раздачи[/b]: {r.size / 2**20:.1f} MB")
+    if source or not many:
+        lines.append(f"[b]Источник[/b]: {source or '—'}")
+    lines.append(f"[b]Наличие сканов в содержимом раздачи[/b]: {'да' if scans else 'нет'}")
+    if many:
+        lines.append("")
+        for d, c in zip(r.dirs, covers):
+            audio = r.album(d)
+            t = r.tracks[audio[0]]
+            lines += [f'[spoiler="[{t["date"]}] {t["album"] or os.path.basename(d)}"]' if t["date"] else
+                      f'[spoiler="{t["album"] or os.path.basename(d)}"]']
+            if c:
+                lines.append(f"[img=right]{c}[/img]")
+            length = hhmmss(sum(r.tracks[f]["duration"] for f in audio))
+            lines += [f"[font=sans1][color=#006699][b]Total length[/b]:[/color] {length}", r.tracklist(audio),
+                      "[/font][/spoiler]", ""]
+        lines.append('[spoiler="Скриншот проверки качества материала"]')
+        for d in r.dirs:
+            t = r.tracks[r.album(d)[0]]
+            lines += [f"[b]{t['album'] or os.path.basename(d)}[/b]", "[code]", r.quality(r.album(d)), "[/code]"]
+    else:
+        lines += ["[b]Треклист[/b]:", r.tracklist(), "",
+                  '[spoiler="Скриншот проверки качества материала"]', "[code]", r.quality(), "[/code]"]
     if spectra:
         lines += ["Спектрограммы:"] + [f"[url={full}][img]{thumb}[/img][/url]" for full, thumb in spectra]
     lines.append("[/spoiler]")
     if x["about"]:
-        lines += ["", '[spoiler="Об альбоме (сборнике)"]', x["about"], "[/spoiler]"]
+        lines += ["", f'[spoiler="Об {"альбомах" if many else "альбоме"}"]', x["about"], "[/spoiler]"]
     if x["lineup"]:
         lines += ["", '[spoiler="Состав"]', x["lineup"], "[/spoiler]"]
     return "\n".join(lines) + "\n"
@@ -742,7 +778,12 @@ def apply_renames(r, names):
 
 def publish(r, mount, work, out_root):
     """Claude's draft until accepted, then the images, the .torrent, the clipboard and the wait for rutracker."""
-    cover = cover_of(r.files, mount, os.path.join(work, "cover.jpg"))
+    def album_covers():  # the cover of each album, in the order of r.dirs (renames keep it)
+        return [cover_of([f for f in r.files if f.startswith(d + "/")], mount, os.path.join(work, f"cover-{i}.jpg"))
+                for i, d in enumerate(r.dirs)]
+
+    covers = album_covers()
+    cover = covers[0]  # of the topic: the first album's
     mid = r.audio[len(r.audio) // 2]
     spectra = [spectrogram(os.path.join(mount, f), os.path.join(work, f"spectrum-{i}.png"))
                for i, f in enumerate(dict.fromkeys([r.audio[0], mid]), 1)]
@@ -823,8 +864,10 @@ put in additions straight away: I see the changes before they are made.""" + (
             delete_files(r, gone)
         if added:
             add_files(r, added)
-            cover = cover_of(r.files, mount, os.path.join(work, "cover.jpg"))
-            images.pop(cover, None)
+            covers = album_covers()
+            cover = covers[0]
+            for c in covers:
+                images.pop(c, None)
         if names:
             apply_renames(r, names)
         title = title_of(r, x)
@@ -833,11 +876,12 @@ put in additions straight away: I see the changes before they are made.""" + (
             shutil.rmtree(out, ignore_errors=True)
         out = os.path.join(out_root, name)
         os.makedirs(out, exist_ok=True)
-        todo = [f for f in ([cover] if cover else []) + spectra if f not in images]
+        todo = [f for f in dict.fromkeys([c for c in covers if c] + spectra) if f not in images]
         if todo:
-            print("Uploading the cover and the spectrograms...")
+            print("Uploading the covers and the spectrograms...")
             images.update(zip(todo, upload_images(todo)))
-        text = post(r, x, images[cover][0] if cover else "ОБЛОЖКА", [images[f] for f in spectra])
+        text = post(r, x, images[cover][0] if cover else "ОБЛОЖКА", [images[f] for f in spectra],
+                    [images[c][0] if c else "" for c in covers])
         since = time.time()
         if torrent and os.path.exists(torrent):  # of the draft before
             os.remove(torrent)
