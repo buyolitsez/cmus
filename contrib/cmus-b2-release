@@ -56,7 +56,7 @@ CODEC = {"mp3": "MP3", "flac": "FLAC", "alac": "ALAC", "ape": "APE", "wavpack": 
          "opus": "Opus", "vorbis": "OGG Vorbis"}
 DISC_DIR = re.compile(r"^(cd|disc|disk|диск)\s*\d+\b", re.I)
 ANNOUNCE = ["http://bt.t-ru.org/ann", "http://bt2.t-ru.org/ann", "http://bt3.t-ru.org/ann", "http://bt4.t-ru.org/ann"]
-MODEL = "claude-sonnet-5-5"
+MODEL = "claude-opus-5-5"
 FORUMS = """Музыка: Классическая и современная академическая музыка; Фольклор, Народная и Этническая музыка;
 New Age, Relax, Meditative & Flamenco; Рэп, Хип-Хоп, R'n'B; Reggae, Ska, Dub; Саундтреки, караоке и мюзиклы;
 Шансон, Авторская и Военная песня; Лейбл- и сцен-паки. Неофициальные сборники и ремастеринги. AI-музыка
@@ -228,7 +228,8 @@ def log_usage(u):
 FIELDS = {
     "artist": "the artist as in the topic: original script first, then the Latin name in square brackets when they "
               "differ, e.g. '岡田拓郎 [Takuro Okada]' or 'Кино'",
-    "album": "the album title (for several albums: their titles joined with ' + ', or a collective title)",
+    "album": "the album title; for several albums 'Collection, N Albums' (as '核P-MODEL - Collection, 3 Albums'), "
+             "unless I ask for another title",
     "year": "year of release, or a range for several albums",
     "genre": "2-4 genres in English, comma-separated, e.g. 'Chamber Jazz, Ambient, New Age'",
     "country": "the artist's country in Russian, e.g. 'Япония'",
@@ -606,7 +607,8 @@ def edited_files(r, edit):
 
 def show_changes(r, x):
     old, new = "\x1b[31m", "\x1b[32m"
-    edits = [e for e in x.get("tag_edits", []) if edited_files(r, e)]
+    edits = [e for e in x.get("tag_edits", []) if any(  # not those made already (Claude repeats them in each draft)
+        r.tracks[f].get(e["tag"], "") != (e["value"][:4] if e["tag"] == "date" else e["value"]) for f in edited_files(r, e))]
     if edits:
         print("\n\x1b[1mChanges in the library\x1b[0m (the bucket, cmus and the phone get them):")
         for e in edits:
@@ -622,7 +624,8 @@ def show_changes(r, x):
     names = [n for n in names if n["path"].strip("/") not in gone]
     added = [a for a in x.get("additions", []) if os.path.isfile(a["source"])
              and os.path.dirname(os.path.realpath(a["source"])) == os.path.realpath(DOWNLOADS)
-             and any(a["path"].strip("/").startswith(d + "/") for d in r.dirs) and ".." not in a["path"]]
+             and any(a["path"].strip("/").startswith(d + "/") for d in r.dirs) and ".." not in a["path"]
+             and a["path"].strip("/") not in r.files]
     if names:
         print("\n\x1b[1mRenames in the library\x1b[0m (likes, playlists, history and ratings move along):")
         for n in names:
@@ -747,65 +750,76 @@ put in additions straight away: I see the changes before they are made.""" + (
         print("\nThe draft from the last time (the files did not change):")
     else:
         x = ask_claude(messages, True)
-    while True:
-        save_draft(key, facts=facts, fields=x)
-        print("\n" + post(r, x) + "\nTitle: " + title_of(r, x) + f"\nForum: {x['forum']}")
-        points = show_notes(x["notes"], seen)
-        edits, names, gone, added = show_changes(r, x)
-        answer = ask("\nEnter: accept, q: quit, numbers of the points to fix (1 3), or tell Claude what to change: ")
-        if answer.lower() == "q":
-            return
+    answer, points, images = "", [], {}  # images: the urls of the uploaded ones, by file
+    while True:  # the draft until accepted, and again when I write to Claude after accepting it
         if not answer:
-            break
-        picked = [int(n) for n in re.findall(r"\d+", answer)]
-        if re.fullmatch(r"[\d\s,]+", answer) and all(1 <= n <= len(points) for n in picked):
-            answer = ("Fix these points of your notes yourself, the way you think right (tags, names, adding or "
-                      "deleting files, the fields):\n" + "\n".join(f"- {points[n - 1]}" for n in picked))
-        else:
-            picked = []
-        seen += [p for i, p in enumerate(points, 1) if i not in picked and p not in seen]
-        save_draft(key, seen=seen)
-        if seen:
-            answer += ("\n\nIn the notes, leave out what I have already seen and left as it is:\n"
-                       + "\n".join(f"- {p}" for p in seen))
-        messages.append({"role": "user", "content": answer})
-        print("Asking Claude...")
-        x = ask_claude(messages, True)
+            save_draft(key, facts=facts, fields=x)
+            print("\n" + post(r, x) + "\nTitle: " + title_of(r, x) + f"\nForum: {x['forum']}")
+            points = show_notes(x["notes"], seen)
+            edits, names, gone, added = show_changes(r, x)
+            answer = ask("\nEnter: accept, q: quit, numbers of the points to fix (1 3), or tell Claude what to change: ")
+            if answer.lower() == "q":
+                return
+        if answer:
+            picked = [int(n) for n in re.findall(r"\d+", answer)]
+            if re.fullmatch(r"[\d\s,]+", answer) and all(1 <= n <= len(points) for n in picked):
+                answer = ("Fix these points of your notes yourself, the way you think right (tags, names, adding or "
+                          "deleting files, the fields):\n" + "\n".join(f"- {points[n - 1]}" for n in picked))
+            else:
+                picked = []
+            seen += [p for i, p in enumerate(points, 1) if i not in picked and p not in seen]
+            save_draft(key, seen=seen)
+            if seen:
+                answer += ("\n\nIn the notes, leave out what I have already seen and left as it is:\n"
+                           + "\n".join(f"- {p}" for p in seen))
+            messages.append({"role": "user", "content": answer})
+            print("Asking Claude...")
+            x, answer = ask_claude(messages, True), ""
+            continue
 
-    if edits:
-        apply_edits(r, edits)
-    if gone:
-        delete_files(r, gone)
-    if added:
-        add_files(r, added)
-        cover = cover_of(r.files, mount, os.path.join(work, "cover.jpg"))
-    if names:
-        apply_renames(r, names)
-    title = title_of(r, x)
-    name = re.sub(r'[\\/:*?"<>|]', "_", f"{x['artist']} - {x['album']} ({x['year']}) [{r.codec()}]").strip()
-    out = os.path.join(out_root, name)
-    os.makedirs(out, exist_ok=True)
-    print("Uploading the cover and the spectrograms...")
-    images = upload_images(([cover] if cover else []) + spectra)
-    text = post(r, x, images[0][0] if cover else "ОБЛОЖКА", images[1:] if cover else images)
-    since = time.time()
-    torrent = os.path.join(out, title.replace("/", "_") + ".torrent")
-    paths = make_torrent(r, name, torrent)
-    for fn, s in (("title.txt", title + "\n"), ("description.txt", text)):
-        with open(os.path.join(out, fn), "w", encoding="utf-8") as f:
-            f.write(s)
+        if edits:
+            apply_edits(r, edits)
+        if gone:
+            delete_files(r, gone)
+        if added:
+            add_files(r, added)
+            cover = cover_of(r.files, mount, os.path.join(work, "cover.jpg"))
+            images.pop(cover, None)
+        if names:
+            apply_renames(r, names)
+        title = title_of(r, x)
+        name = re.sub(r'[\\/:*?"<>|]', "_", f"{x['artist']} - {x['album']} ({x['year']}) [{r.codec()}]").strip()
+        out = os.path.join(out_root, name)
+        os.makedirs(out, exist_ok=True)
+        todo = [f for f in ([cover] if cover else []) + spectra if f not in images]
+        if todo:
+            print("Uploading the cover and the spectrograms...")
+            images.update(zip(todo, upload_images(todo)))
+        text = post(r, x, images[cover][0] if cover else "ОБЛОЖКА", [images[f] for f in spectra])
+        since = time.time()
+        torrent = os.path.join(out, title.replace("/", "_") + ".torrent")
+        paths = make_torrent(r, name, torrent)
+        for fn, s in (("title.txt", title + "\n"), ("description.txt", text)):
+            with open(os.path.join(out, fn), "w", encoding="utf-8") as f:
+                f.write(s)
 
-    latin = re.search(r"\[(.+)\]$", x["artist"])  # rutracker's search finds the Latin name better
-    search = f"{latin.group(1) if latin else x['artist']} {x['album']}"
-    subprocess.Popen(["xdg-open", "https://rutracker.org/forum/tracker.php?nm=" + urllib.parse.quote(search)],
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    print(f"\nForum: {x['forum']}\nTorrent: {torrent}\nFirefox shows the rutracker search, to check the album is not there yet.")
-    subprocess.run(["wl-copy", title], stdin=subprocess.DEVNULL)
-    ask("The title is in the clipboard. Enter copies the description: ")
-    subprocess.run(["wl-copy", text], stdin=subprocess.DEVNULL)
-    ask("The description is in the clipboard. Enter copies the path of the .torrent: ")
-    subprocess.run(["wl-copy", torrent], stdin=subprocess.DEVNULL)
-    print(wait_for_rutracker(torrent, paths, since))
+        latin = re.search(r"\[(.+)\]$", x["artist"])  # rutracker's search finds the Latin name better
+        search = f"{latin.group(1) if latin else x['artist']} {x['album']}"
+        subprocess.Popen(["xdg-open", "https://rutracker.org/forum/tracker.php?nm=" + urllib.parse.quote(search)],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"\nForum: {x['forum']}\nTorrent: {torrent}\nFirefox shows the rutracker search, to check the album is not there yet.")
+        subprocess.run(["wl-copy", title], stdin=subprocess.DEVNULL)
+        answer = ask("The title is in the clipboard. Enter copies the description, or tell Claude what to change: ")
+        if answer:
+            continue
+        subprocess.run(["wl-copy", text], stdin=subprocess.DEVNULL)
+        answer = ask("The description is in the clipboard. Enter copies the path of the .torrent, "
+                     "or tell Claude what to change: ")
+        if answer:
+            continue
+        subprocess.run(["wl-copy", torrent], stdin=subprocess.DEVNULL)
+        print(wait_for_rutracker(torrent, paths, since))
+        return
 
 
 def picard_albums(bucket, albums):
