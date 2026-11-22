@@ -24,6 +24,7 @@ import concurrent.futures
 import curses
 import gzip
 import glob
+import hashlib
 import html
 import json
 import os
@@ -265,6 +266,34 @@ def ask_claude(messages, fields):
         return json.loads(text[-1]) if fields else "\n".join(text)
 
 
+CACHE = os.path.join(OUT, "release-cache.json")
+CACHE_DAYS = 30
+
+
+def load_cache():
+    """The checks of the files (by size and mtime) and Claude's drafts of the releases, of the last 30 days."""
+    try:
+        with open(CACHE, encoding="utf-8") as f:
+            c = json.load(f)
+    except (FileNotFoundError, ValueError):
+        c = {}
+    old = time.time() - CACHE_DAYS * 86400
+    return {k: {x: v for x, v in c.get(k, {}).items() if v["time"] > old} for k in ("probe", "drafts")}
+
+
+def save_cache(c):
+    os.makedirs(OUT, exist_ok=True)
+    with open(CACHE + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(c, f, ensure_ascii=False)
+    os.replace(CACHE + ".tmp", CACHE)
+
+
+def save_draft(key, **fields):
+    c = load_cache()
+    c["drafts"][key] = {**c["drafts"].get(key, {}), **fields, "time": time.time()}
+    save_cache(c)
+
+
 class Release:
     def __init__(self, mount, dirs):
         self.mount, self.dirs = mount, dirs
@@ -277,15 +306,26 @@ class Release:
                         self.files.append(os.path.relpath(os.path.join(root, n), mount))
         self.audio = [f for f in self.files if os.path.splitext(f)[1].lower() in AUDIO_EXT]
         self.size = sum(os.path.getsize(os.path.join(mount, f)) for f in self.files)
-        self.tracks = {}
+        cache = load_cache()
+        stamps = {f: [os.stat(os.path.join(mount, f)).st_size, os.stat(os.path.join(mount, f)).st_mtime]
+                  for f in self.audio}
+        self.tracks = {f: cache["probe"][f]["data"] for f in self.audio
+                       if cache["probe"].get(f, {}).get("stamp") == stamps[f]}
+        todo = [f for f in self.audio if f not in self.tracks]
+        if len(todo) < len(self.audio):
+            print(f"{len(self.audio) - len(todo)} files were checked before and did not change.")
         # 4 files at a time: faster over the mount, and arch overheats on all its cores
         with concurrent.futures.ThreadPoolExecutor(4) as pool:
-            jobs = {pool.submit(probe, os.path.join(mount, f)): f for f in self.audio}
+            jobs = {pool.submit(probe, os.path.join(mount, f)): f for f in todo}
             for i, job in enumerate(concurrent.futures.as_completed(jobs), 1):
-                print(f"\r\x1b[KChecking {i}/{len(self.audio)}: {os.path.basename(jobs[job])}", end="", flush=True)
-                self.tracks[jobs[job]] = job.result()
+                print(f"\r\x1b[KChecking {i}/{len(todo)}: {os.path.basename(jobs[job])}", end="", flush=True)
+                f = jobs[job]
+                self.tracks[f] = job.result()
+                cache["probe"][f] = {"stamp": stamps[f], "time": time.time(), "data": self.tracks[f]}
+        if todo:
+            print()
+            save_cache(cache)
         self.tracks = {f: self.tracks[f] for f in self.audio}
-        print()
         t = list(self.tracks.values())
         self.codecs = sorted({x["codec"] for x in t})
         self.lossless = all(c in LOSSLESS for c in self.codecs)
@@ -517,7 +557,7 @@ def edited_files(r, edit):
 
 def show_changes(r, x):
     old, new = "\x1b[31m", "\x1b[32m"
-    edits = [e for e in x["tag_edits"] if edited_files(r, e)]
+    edits = [e for e in x.get("tag_edits", []) if edited_files(r, e)]
     if edits:
         print("\n\x1b[1mChanges in the library\x1b[0m (the bucket, cmus and the phone get them):")
         for e in edits:
@@ -527,9 +567,9 @@ def show_changes(r, x):
                 os.path.relpath(e["path"].strip("/"), r.dirs[0])
             what = f"{where} ({len(fs)} tracks)" if len(fs) > 1 else where
             print(wrap(f"{what}: {e['tag']} {old}{' / '.join(w or '—' for w in was)}\x1b[0m → {new}{e['value']}\x1b[0m"))
-    names = [n for n in x["renames"] if n["name"] and "/" not in n["name"] and any(f == n["path"].strip("/") or f.startswith(n["path"].strip("/") + "/")
+    names = [n for n in x.get("renames", []) if n["name"] and "/" not in n["name"] and any(f == n["path"].strip("/") or f.startswith(n["path"].strip("/") + "/")
                                                        for f in r.files)]
-    gone = sorted({d["path"].strip("/") for d in x["deletions"]} & (set(r.files) - set(r.audio)))
+    gone = sorted({d["path"].strip("/") for d in x.get("deletions", [])} & (set(r.files) - set(r.audio)))
     names = [n for n in names if n["path"].strip("/") not in gone]
     if names:
         print("\n\x1b[1mRenames in the library\x1b[0m (likes, playlists, history and ratings move along):")
@@ -610,14 +650,26 @@ rutracker's music forums (each has lossy and lossless subforums):
 First look the release up on the web (its official page, Discogs, RYM, Bandcamp, the label): the artist's
 country, genres as RYM or Discogs give them, the official page, line-up and a few facts about the album.
 Answer with short notes of what you found and where."""}]
-    print("Claude is looking the album up...")
-    ask_claude(messages, False)
+    key = "\n".join(r.dirs)  # the draft of these albums; its fields only while the facts are the same
+    facts = hashlib.sha1(r.facts().encode("utf-8")).hexdigest()
+    draft = load_cache()["drafts"].get(key, {})
+    if draft.get("research"):
+        messages.append({"role": "assistant", "content": draft["research"]})
+    else:
+        print("Claude is looking the album up...")
+        save_draft(key, research=ask_claude(messages, False))
     messages.append({"role": "user", "content": """Now fill in the fields of the topic. Prefer the tags where they
 say it; write only what you found or what the files show, and leave a field empty rather than guess. I may answer
 with corrections in my own words, also asking you to change tags or names: then answer with all the fields again,
 with the changes I asked for in tag_edits, renames and deletions (fill the fields as they will be after the changes)."""})
-    while True:
+    if draft.get("facts") == facts and draft.get("fields"):
+        x = draft["fields"]
+        messages.append({"role": "assistant", "content": json.dumps(x, ensure_ascii=False)})
+        print("\nThe draft from the last time (the files did not change):")
+    else:
         x = ask_claude(messages, True)
+    while True:
+        save_draft(key, facts=facts, fields=x)
         print("\n" + post(r, x) + "\nTitle: " + title_of(r, x) + f"\nForum: {x['forum']}")
         points = show_notes(x["notes"])
         edits, names, gone = show_changes(r, x)
@@ -632,6 +684,7 @@ with the changes I asked for in tag_edits, renames and deletions (fill the field
                       + "\n".join(f"- {points[n - 1]}" for n in picked))
         messages.append({"role": "user", "content": answer})
         print("Asking Claude...")
+        x = ask_claude(messages, True)
 
     if edits:
         apply_edits(r, edits)
