@@ -244,6 +244,28 @@ SCHEMA = {"type": "object", "properties": {
     "required": [*FIELDS, *CHANGES], "additionalProperties": False}
 
 
+DISCOGS = {"name": "discogs", "description": "Reads a release or master page of Discogs (its site does not let the "
+           "web fetch in, its API does): genres, styles, labels, country, year, tracklist, credits and notes.",
+           "input_schema": {"type": "object", "required": ["url"], "properties": {
+               "url": {"type": "string", "description": "a discogs.com/release/... or discogs.com/master/... link"}}}}
+
+
+def discogs(url):
+    m = re.search(r"discogs\.com/(?:[a-z]{2}/)?(release|master)/(\d+)", url)
+    if not m:
+        return "Not a Discogs release or master link."
+    try:
+        r = requests.get(f"https://api.discogs.com/{m[1]}s/{m[2]}", headers={"User-Agent": "cmus-b2-release/1.0"},
+                         timeout=30)
+        r.raise_for_status()
+    except requests.RequestException as e:
+        return f"Discogs did not answer: {e}"
+    d = r.json()
+    keep = ("title", "artists", "year", "released", "country", "labels", "formats", "genres", "styles", "tracklist",
+            "extraartists", "notes")
+    return json.dumps({k: d[k] for k in keep if d.get(k)}, ensure_ascii=False)[:20000]
+
+
 def ask_claude(messages, fields):
     """Claude's answer to messages, which it may look up on the web: the fields as a dict, or notes in words
     when fields is False (with the answer format set, Claude tends to skip the search)."""
@@ -253,12 +275,17 @@ def ask_claude(messages, fields):
     while True:
         r = client.beta.messages.create(
             model=MODEL, max_tokens=16000, messages=messages,
-            tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 30}],  # several albums take 15-20
+            tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 30}, DISCOGS],
             output_config={"effort": "low", **fmt},
             betas=["server-side-fallback-2026-07-01"], fallbacks="default")
         log_usage(r.usage)
         messages.append({"role": "assistant", "content": r.content})
         if r.stop_reason == "pause_turn":  # the web search goes on
+            continue
+        if r.stop_reason == "tool_use":
+            messages.append({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": b.id, "content": discogs(b.input.get("url", ""))}
+                for b in r.content if b.type == "tool_use"]})
             continue
         if r.stop_reason != "end_turn":
             raise RuntimeError(f"Claude did not answer ({r.stop_reason})")
@@ -648,7 +675,9 @@ rutracker's music forums (each has lossy and lossless subforums):
 {FORUMS}
 </forums>
 First look the release up on the web (its official page, Discogs, RYM, Bandcamp, the label): the artist's
-country, genres as RYM or Discogs give them, the official page, line-up and a few facts about the album.
+country, genres as RYM or Discogs give them, the official page, line-up and a few facts about the album. Read the
+Discogs pages you find with the discogs tool. RYM lets nothing read its pages: take its genres from the search
+results, and say so if they are not there.
 Answer with short notes of what you found and where."""}]
     key = "\n".join(r.dirs)  # the draft of these albums; its fields only while the facts are the same
     facts = hashlib.sha1(r.facts().encode("utf-8")).hexdigest()
