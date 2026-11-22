@@ -43,7 +43,7 @@ import libtorrent as lt
 import mutagen
 import requests
 
-from cmus_b2 import OUT, band_drop, key_of, option, pick, query, size
+from cmus_b2 import OUT, REMOTE, band_drop, key_of, option, pick, query, size, trash
 
 AUDIO_EXT = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".ape", ".wv", ".aac"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png"}
@@ -229,6 +229,10 @@ CHANGES = {  # what Claude may change, when I ask it to
     "renames": ("new names of folders or files of the release, made in my library too (the album folders, a .cue "
                 "file to match its audio, and so on); only when I ask for it",
                 {"path": "a folder or file, as in the facts", "name": "its new name, without slashes"}),
+    "deletions": ("files that are not tracks (a .cue or .log of another rip, a stray image) to delete from my library "
+                  "and leave out of the release; the bucket keeps them hidden for 30 days; do it yourself when I ask "
+                  "for it, do not ask me to delete files",
+                  {"path": "the file, as in the facts"}),
 }
 SCHEMA = {"type": "object", "properties": {
     **{k: {"type": "string", "description": v} for k, v in FIELDS.items()},
@@ -529,7 +533,30 @@ def show_changes(r, x):
         print("\n\x1b[1mRenames in the library\x1b[0m (likes, playlists, history and ratings move along):")
         for n in names:
             print(wrap(f"{old}{os.path.basename(n['path'].strip('/'))}\x1b[0m → {new}{n['name']}\x1b[0m"))
-    return edits, names
+    gone = sorted({d["path"].strip("/") for d in x["deletions"]} & (set(r.files) - set(r.audio)))
+    if gone:
+        print("\n\x1b[1mDelete from the library\x1b[0m (the bucket keeps them hidden for 30 days):")
+        for f in gone:
+            print(wrap(f"{old}{f.removeprefix(os.path.commonpath(r.dirs) + '/')}\x1b[0m"))
+    names = [n for n in names if n["path"].strip("/") not in gone]
+    return edits, names, gone
+
+
+def delete_files(r, gone):
+    """Hides the files in the bucket, puts their local copies in the trash and leaves them out of the release."""
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt") as lst:
+        lst.write("\n".join(gone) + "\n")
+        lst.flush()
+        subprocess.run(["rclone", "delete", f"{REMOTE}/music", "--files-from-raw", lst.name], check=True)
+    for root in {os.path.expanduser("~/Music"), option("download_dir")} - {""}:
+        for f in gone:
+            if os.path.exists(os.path.join(root, f)):
+                trash(os.path.join(root, f))
+    for d in {os.path.dirname(f) for f in gone}:
+        subprocess.run(["rclone", "rc", "vfs/refresh", f"dir={d}"], capture_output=True)
+    r.files = [f for f in r.files if f not in gone]
+    r.size = sum(os.path.getsize(os.path.join(r.mount, f)) for f in r.files)
+    print(f"Deleted {len(gone)} files.")
 
 
 def apply_edits(r, edits):
@@ -588,12 +615,12 @@ Answer with short notes of what you found and where."""}]
     messages.append({"role": "user", "content": """Now fill in the fields of the topic. Prefer the tags where they
 say it; write only what you found or what the files show, and leave a field empty rather than guess. I may answer
 with corrections in my own words, also asking you to change tags or names: then answer with all the fields again,
-with the changes I asked for in tag_edits and renames (fill the fields as they will be after the changes)."""})
+with the changes I asked for in tag_edits, renames and deletions (fill the fields as they will be after the changes)."""})
     while True:
         x = ask_claude(messages, True)
         print("\n" + post(r, x) + "\nTitle: " + title_of(r, x) + f"\nForum: {x['forum']}")
         points = show_notes(x["notes"])
-        edits, names = show_changes(r, x)
+        edits, names, gone = show_changes(r, x)
         answer = ask("\nEnter: accept, q: quit, numbers of the points to fix (1 3), or tell Claude what to change: ")
         if answer.lower() == "q":
             return
@@ -601,13 +628,15 @@ with the changes I asked for in tag_edits and renames (fill the fields as they w
             break
         picked = [int(n) for n in re.findall(r"\d+", answer)]
         if re.fullmatch(r"[\d\s,]+", answer) and all(1 <= n <= len(points) for n in picked):
-            answer = ("Fix these points of your notes yourself, the way you think right (tags, names, the fields):\n"
+            answer = ("Fix these points of your notes yourself, the way you think right (tags, names, deleting files, the fields):\n"
                       + "\n".join(f"- {points[n - 1]}" for n in picked))
         messages.append({"role": "user", "content": answer})
         print("Asking Claude...")
 
     if edits:
         apply_edits(r, edits)
+    if gone:
+        delete_files(r, gone)
     if names:
         apply_renames(r, names)
     title = title_of(r, x)
