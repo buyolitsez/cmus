@@ -10,6 +10,7 @@ them. Then cmus's playlists get the new paths and cmus-b2 reloads the library.
 Shows what changes and asks first.
 """
 import argparse
+import concurrent.futures
 import gzip
 import hashlib
 import io
@@ -31,6 +32,9 @@ a = p.parse_args()
 if len(a.paths) % 2:
     sys.exit("Give pairs of an old and a new path.")
 pairs = [(o.strip("/"), n.strip("/")) for o, n in zip(a.paths[::2], a.paths[1::2]) if o.strip("/") != n.strip("/")]
+for o, _ in pairs:
+    if any(x != o and (x.startswith(o + "/")) for x, _ in pairs):
+        sys.exit(f"{o} is renamed together with something in it: rename it in a run of its own.")
 DISC_DIR = re.compile(r"^\s*(cd|disc|disk|диск)\s*\d+\s*$", re.I)  # as make_catalog.py folds disc folders
 
 
@@ -66,18 +70,21 @@ def album_id(key):  # as make_catalog.py
     return hashlib.sha1(key.encode("utf-8", "surrogateescape")).hexdigest()[:16]
 
 
+listings = {}  # folder -> the paths of the files in it, listed once
+
+
 def kind(path):
     """"file", "folder" or None for a path under music/ (a bucket has every folder, so an empty one is none)."""
-    r = subprocess.run(["rclone", "lsjson", "--stat", f"{a.remote}/music/{path}"], capture_output=True)
-    if r.returncode:
-        return None
-    if not json.loads(r.stdout)["IsDir"]:
-        return "file"
-    r = subprocess.run(["rclone", "lsf", "-R", "--files-only", f"{a.remote}/music/{path}"], capture_output=True, text=True)
-    return "folder" if r.stdout.strip() else None
+    d = os.path.dirname(path)
+    if d not in listings:
+        r = subprocess.run(["rclone", "lsf", "-R", "--files-only", f"{a.remote}/music/{d}"], capture_output=True, text=True)
+        listings[d] = {f"{d}/{x}" if d else x for x in r.stdout.splitlines()}
+    files = listings[d]
+    return "file" if path in files else "folder" if any(f.startswith(path + "/") for f in files) else None
 
 
 mount = option("bucket_dir") or os.path.expanduser("~/b2music")
+print("Looking the renames up in the bucket...", flush=True)
 kinds = {}  # None for a rename whose files were moved by a run that stopped after that: the rest is done again
 for old, new in pairs:
     kinds[old] = kind(old)
@@ -131,18 +138,25 @@ print("The phone renames its downloads and its own copies of these after its nex
 if input("Rename? [y/N] ").strip().lower() != "y":
     sys.exit("Nothing renamed.")
 
-print("Moving the files in the bucket...")
-for old, new in pairs:
-    if not kinds[old]:
-        pass
-    elif kinds[old] == "folder":
-        rclone("move", f"{a.remote}/music/{old}", f"{a.remote}/music/{new}", "--transfers", "8")
+def move(pair):
+    old, new = pair
+    if kinds[old] == "folder":
+        rclone("move", f"{a.remote}/music/{old}", f"{a.remote}/music/{new}", "--transfers", "8", capture_output=True)
         subprocess.run(["rclone", "move", f"{a.remote}/lite/{old}", f"{a.remote}/lite/{new}"], capture_output=True)
-    else:
-        rclone("moveto", f"{a.remote}/music/{old}", f"{a.remote}/music/{new}")
+    elif kinds[old] == "file":
+        rclone("moveto", f"{a.remote}/music/{old}", f"{a.remote}/music/{new}", capture_output=True)
         subprocess.run(["rclone", "moveto", f"{a.remote}/lite/{old}.opus", f"{a.remote}/lite/{new}.opus"],
                        capture_output=True)
-    for root in {os.path.expanduser(a.music), option("download_dir")} - {""}:
+
+
+todo = [p for p in pairs if kinds[p[0]]]
+with concurrent.futures.ThreadPoolExecutor(8) as pool:
+    for i, _ in enumerate(pool.map(move, todo), 1):
+        print(f"\r\x1b[KMoving the files in the bucket: {i}/{len(todo)}", end="", flush=True)
+print()
+local = {os.path.expanduser(a.music), option("download_dir")} - {""}
+for old, new in pairs:
+    for root in local:
         if os.path.exists(os.path.join(root, old)):
             os.renames(os.path.join(root, old), os.path.join(root, new))
 
