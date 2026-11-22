@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.request
 
 import libtorrent as lt
@@ -173,6 +174,24 @@ def remove(h=""):
             pass
 
 
+def width(text):
+    """How many terminal columns the text takes (CJK letters take two)."""
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+
+
+def columns(rows, gap="   "):
+    """Rows of cells as lines, every column as wide as its widest cell; the first column (the names) is left
+    aligned and cut at 60 columns, the others aligned right."""
+    def cut(text, n):
+        while width(text) > n:
+            text = text[:-2] + "…"
+        return text
+    rows = [[cut(r[0], 60), *r[1:]] for r in rows]
+    widths = [max(width(r[i]) for r in rows) for i in range(len(rows[0]))]
+    return [gap.join(c + " " * (w - width(c)) if i < 2 else " " * (w - width(c)) + c
+                     for i, (c, w) in enumerate(zip(r, widths))).rstrip() for r in rows]
+
+
 def status(_=""):
     torrents, stats = load(TORRENTS, {}), load(STATS, {})
     live = stats.get("torrents", {})
@@ -186,20 +205,28 @@ def status(_=""):
     if not running:
         head += "  (service not running: systemctl --user start cmus-b2-seed)"
     print(f"\t{head}")
+
+    def numbers(s):
+        return [f"↑ {s.get('rate', 0) / 1024:.0f} KB/s", f"peers {s.get('peers', 0)}",
+                f"month {size(s.get('sent_month', 0))}", f"total {size(s.get('sent_total', 0))}"]
+
+    keys, rows = [], []  # the torrents, then Soulseek, in the same columns
     for h, t in sorted(torrents.items(), key=lambda x: x[1]["name"].casefold()):
         s = live.get(h, {}) if running else {}
-        state = s.get("state", "stopped") if t["enabled"] else "off"
-        line = (f"[{'x' if t['enabled'] else ' '}] {t['name']}  ·  {state}  ·  {len(t['files'])} files"
-                f"  ·  ↑ {s.get('rate', 0) / 1024:.0f} KB/s  ·  peers {s.get('peers', 0)}"
-                f"  ·  month {size(s.get('sent_month', 0))}  ·  total {size(s.get('sent_total', 0))}")
+        keys.append(h)
+        rows.append([f"[{'x' if t['enabled'] else ' '}] {t['name']}",
+                     s.get("state", "stopped") if t["enabled"] else "off", f"{len(t['files'])} files", *numbers(s)])
+    if "soulseek" in stats:
+        s = stats["soulseek"] if running else {}
+        rows.append([s.get("state", "stopped"), "", "", *numbers(s)])
+    lines = columns(rows) if rows else []
+    for h, line in zip(keys, lines):
         print(f"{h}\t{line}")
     if not torrents:
         print("\tNo torrents yet: a adds one")
     if "soulseek" in stats:
-        s = stats["soulseek"] if running else {}
         print("\t\n\t\n\tSoulseek")  # a block of its own below the torrents
-        print(f"\t{s.get('state', 'stopped')}  ·  ↑ {s.get('rate', 0) / 1024:.0f} KB/s  ·  peers {s.get('peers', 0)}"
-              f"  ·  month {size(s.get('sent_month', 0))}  ·  total {size(s.get('sent_total', 0))}")
+        print(f"\t{lines[-1]}")
 
 
 # service
