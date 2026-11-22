@@ -7,7 +7,8 @@ the position there. Hook it into cmus by adding
 to the status_display_program script: on play, pause and track change of a
 bucket track it writes the file. While cmus does not play, its status line shows
 what the phone plays ("cmus-b2-now --watch"), and play on the same paused track
-goes on with what the phone played instead.
+goes on with what the phone played instead. A track heard for half its length or 4 minutes
+goes into state/history.tsv, marked with this computer, as the phone counts its plays.
 
 "cmus-b2-now --resume" does the same at once: it plays the track the file names,
 from where it stopped, and puts the rest of that queue into the cmus play queue:
@@ -23,7 +24,12 @@ import time
 from cmus_b2 import OUT, REMOTE as BUCKET, catalog_tracks, cmus, key_of, query
 
 REMOTE = BUCKET + "/state/now-playing.json"
+HISTORY = BUCKET + "/state/history.tsv"
 STATE = os.path.join(OUT, "now-playing-status")
+# the track playing now and how long it was heard, for the history
+LISTEN = os.path.join(OUT, "now-playing-listen.json")
+# plays not seen in the bucket yet
+PENDING = os.path.join(OUT, "history-pending.tsv")
 # the whole shared queue as last written or taken over here, for the tracks played before the current one
 SHARED = os.path.join(OUT, "now-playing-shared.json")
 QUEUE_MAX, PAST_MAX = 200, 100  # as in the app
@@ -102,6 +108,50 @@ def write(past, queue, position, playing):
         subprocess.run(["rclone", "deletefile", "--b2-versions", f"{d}/{v}"], capture_output=True)
 
 
+def listen(tid, duration, playing):
+    """Counts a play as the app does: half the track or 4 minutes heard, tracks under 30 s not at all."""
+    now = time.time()
+    try:
+        with open(LISTEN) as f:
+            s = json.load(f)
+    except (FileNotFoundError, ValueError):
+        s = {}
+    if s.get("since"):
+        s["listened"] += now - s["since"]
+    s["since"] = None
+    if s.get("tid") and not s["counted"] and s["duration"] >= 30 and s["listened"] >= min(s["duration"] / 2, 240):
+        s["counted"] = True
+        with open(PENDING, "a") as f:
+            f.write(f"{int(s['start'] * 1000)}\t{s['tid']}\t{DEVICE}\n")
+    if playing and tid != s.get("tid"):
+        s = {"tid": tid, "duration": duration, "start": now, "listened": 0, "counted": False}
+    if playing and tid:
+        s["since"] = now
+    with open(LISTEN, "w") as f:
+        json.dump(s, f)
+    if os.path.exists(PENDING):
+        upload_history()
+
+
+def upload_history():
+    """Adds the plays counted here to state/history.tsv. They stay pending until a later read finds them there,
+    so a play lost to the phone writing the file at the same moment goes up again."""
+    with open(PENDING) as f:
+        pending = f.read().splitlines()
+    r = subprocess.run(["rclone", "cat", HISTORY], capture_output=True, text=True)
+    if r.returncode != 0:
+        return
+    there = {tuple(line.split("\t")[:2]) for line in r.stdout.splitlines()}
+    missing = [line for line in pending if tuple(line.split("\t")[:2]) not in there]
+    if missing:
+        text = r.stdout + ("\n" if r.stdout and not r.stdout.endswith("\n") else "") + "".join(f"{line}\n" for line in missing)
+        subprocess.run(["rclone", "rcat", HISTORY], input=text.encode(), check=True)
+        with open(PENDING, "w") as f:
+            f.write("".join(f"{line}\n" for line in missing))
+    else:
+        os.remove(PENDING)
+
+
 def hook(args):
     """status_display_program: on play of the paused track go on with what the phone played later,
     write on play and on pause or stop after playing, else tell about the phone."""
@@ -130,7 +180,8 @@ def hook(args):
     if status == "playing" or (prev_pid == pid and prev_status == "playing"):
         key = key_of(file, (q.get("set bucket_dir"), q.get("set download_dir")))
         tracks = list(catalog_tracks()) if key else []
-        tid = next((tid for tid, k, _, _ in tracks if k == key), None)
+        tid, t = next(((tid, t) for tid, k, t, _ in tracks if k == key), (None, None))
+        listen(tid, t and t["duration"], status == "playing")
         if tid:
             roots = (q.get("set bucket_dir"), q.get("set download_dir"))
             write(played(tid, tracks), [tid] + upcoming(tid, roots, tracks), float(q.get("position", 0)), status == "playing")
