@@ -581,6 +581,43 @@ def wrap(text, first="  • ", rest="    "):
     return textwrap.fill(text, width, initial_indent=first, subsequent_indent=rest)
 
 
+def section(name):
+    width = max(40, shutil.get_terminal_size().columns - 2)
+    print(f"\n\x1b[1;36m── {name} " + "─" * max(0, width - len(name) - 4) + "\x1b[0m")
+
+
+def show_draft(r, x, before=None, title="Release"):
+    """The draft on a clean screen: the topic title and forum, the fields Claude filled in (the ones it changed
+    since the draft before in yellow), and what the files give. The BBCode itself is only copied."""
+    print("\x1b[2J\x1b[H", end="")
+    width = max(40, shutil.get_terminal_size().columns - 2)
+
+    def row(label, value, *keys, lines=None):
+        changed = before is not None and any(before.get(k) != x.get(k) for k in keys)
+        text = value or "—"
+        if lines:
+            text = textwrap.shorten(" ".join(text.split()), width * lines - 12, placeholder=" …")
+        out = textwrap.fill(text, width, initial_indent=f"  {label:<9} ", subsequent_indent=" " * 12)
+        print(f"\x1b[33m{out}\x1b[0m" if changed else out)
+
+    section(title)
+    row("Title", title_of(r, x), "artist", "album", "year", "genre", "web")
+    row("Forum", x["forum"], "forum")
+    albums = f"{len(r.dirs)} albums, " if len(r.dirs) > 1 else ""
+    row("Files", f"{albums}{len(r.audio)} tracks, {hhmmss(r.duration)}, {r.size / 2**20:.1f} MB, "
+                 f"{r.codec()} {r.specs()}")
+    section("Fields" + (" (yellow: changed)" if before is not None else ""))
+    row("Artist", x["artist"], "artist")
+    row("Album", x["album"], "album")
+    row("Year", x["year"], "year")
+    row("Genre", x["genre"], "genre")
+    row("Country", x["country"], "country")
+    row("Source", {"yes": "WEB", "no": "CD/vinyl rip"}.get(x["web"], "") + (f"  {x['source_url']}" if x["source_url"] else ""),
+        "web", "source_url")
+    row("About", x["about"], "about", lines=3)
+    row("Line-up", "; ".join(l.strip() for l in x["lineup"].splitlines() if l.strip()), "lineup", lines=2)
+
+
 def show_notes(notes, seen=()):
     """Claude's notes as a numbered list, a point per line (or per sentence, if it wrote one paragraph), without
     the points already seen. Returns the points."""
@@ -593,7 +630,7 @@ def show_notes(notes, seen=()):
     points = [q for q in (re.sub(r"^\s*(?:[-•*]|\d+[.)])\s*", "", p) for p in points) if q not in seen]
     if not points:
         return []
-    print("\n\x1b[1mClaude:\x1b[0m")
+    section("Claude")
     for i, p in enumerate(points, 1):
         print(wrap(p, f"{i:>3}. ", "     "))
     return points
@@ -610,7 +647,7 @@ def show_changes(r, x):
     edits = [e for e in x.get("tag_edits", []) if any(  # not those made already (Claude repeats them in each draft)
         r.tracks[f].get(e["tag"], "") != (e["value"][:4] if e["tag"] == "date" else e["value"]) for f in edited_files(r, e))]
     if edits:
-        print("\n\x1b[1mChanges in the library\x1b[0m (the bucket, cmus and the phone get them):")
+        section("Tags (the bucket, cmus and the phone get them)")
         for e in edits:
             fs = edited_files(r, e)
             was = sorted({r.tracks[f].get(e["tag"], "") for f in fs})
@@ -627,15 +664,15 @@ def show_changes(r, x):
              and any(a["path"].strip("/").startswith(d + "/") for d in r.dirs) and ".." not in a["path"]
              and a["path"].strip("/") not in r.files]
     if names:
-        print("\n\x1b[1mRenames in the library\x1b[0m (likes, playlists, history and ratings move along):")
+        section("Renames (likes, playlists, history and ratings move along)")
         for n in names:
             print(wrap(f"{old}{os.path.basename(n['path'].strip('/'))}\x1b[0m → {new}{n['name']}\x1b[0m"))
     if gone:
-        print("\n\x1b[1mDelete from the library\x1b[0m (the bucket keeps them hidden for 30 days):")
+        section("Delete (the bucket keeps them hidden for 30 days)")
         for f in gone:
             print(wrap(f"{old}{f.removeprefix(os.path.commonpath(r.dirs) + '/')}\x1b[0m"))
     if added:
-        print("\n\x1b[1mAdd to the library\x1b[0m:")
+        section("Add to the albums")
         for a in added:
             print(wrap(f"{os.path.basename(a['source'])} → {new}{a['path'].strip('/').removeprefix(os.path.commonpath(r.dirs) + '/')}\x1b[0m"))
     return edits, names, gone, added
@@ -744,20 +781,22 @@ with the changes I asked for in tag_edits, renames, deletions and additions (fil
 put in additions straight away: I see the changes before they are made.""" + (
         "\nIn the notes, leave out what I have already seen and left as it is:\n" + "\n".join(f"- {p}" for p in seen)
         if seen else "")})
-    if draft.get("facts") == facts and draft.get("fields"):
+    cached = draft.get("facts") == facts and draft.get("fields")
+    if cached:
         x = draft["fields"]
         messages.append({"role": "assistant", "content": json.dumps(x, ensure_ascii=False)})
-        print("\nThe draft from the last time (the files did not change):")
     else:
         x = ask_claude(messages, True)
-    answer, points, images, out, torrent = "", [], {}, None, None  # images: the urls of the uploaded ones, by file
+    answer, points, images, out, torrent, before = "", [], {}, None, None, None  # images: uploaded, by file
     while True:  # the draft until accepted, and again when I write to Claude after accepting it
         if not answer:
             save_draft(key, facts=facts, fields=x)
-            print("\n" + post(r, x) + "\nTitle: " + title_of(r, x) + f"\nForum: {x['forum']}")
+            show_draft(r, x, before, "Release (the draft from the last time: the files did not change)" if cached else "Release")
+            cached = False
             points = show_notes(x["notes"], seen)
             edits, names, gone, added = show_changes(r, x)
-            answer = ask("\nEnter: accept, q: quit, numbers of the points to fix (1 3), or tell Claude what to change: ")
+            section("")
+            answer = ask("Enter: accept · q: quit · numbers of Claude's points to fix (1 3) · or write to Claude: ")
             if answer.lower() == "q":
                 return
         if answer:
@@ -774,7 +813,7 @@ put in additions straight away: I see the changes before they are made.""" + (
                            + "\n".join(f"- {p}" for p in seen))
             messages.append({"role": "user", "content": answer})
             print("Asking Claude...")
-            x, answer = ask_claude(messages, True), ""
+            before, x, answer = x, ask_claude(messages, True), ""
             continue
 
         if edits:
@@ -811,17 +850,21 @@ put in additions straight away: I see the changes before they are made.""" + (
         search = f"{latin.group(1) if latin else x['artist']} {x['album']}"
         subprocess.Popen(["xdg-open", "https://rutracker.org/forum/tracker.php?nm=" + urllib.parse.quote(search)],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print(f"\nForum: {x['forum']}\nTorrent: {torrent}\nFirefox shows the rutracker search, to check the album is not there yet.")
+        section("New topic on rutracker")
+        print(f"  Forum     {x['forum']}\n  Files     {out}\n"
+              "  Firefox shows the rutracker search: check the album is not there yet.\n")
         subprocess.run(["wl-copy", title], stdin=subprocess.DEVNULL)
-        answer = ask("The title is in the clipboard. Enter copies the description, or tell Claude what to change: ")
+        print("  \x1b[32m1. The title is in the clipboard.\x1b[0m")
+        answer = ask("Enter: copy the description · or write to Claude: ")
         if answer:
             continue
         subprocess.run(["wl-copy", text], stdin=subprocess.DEVNULL)
-        answer = ask("The description is in the clipboard. Enter copies the path of the .torrent, "
-                     "or tell Claude what to change: ")
+        print("  \x1b[32m2. The description is in the clipboard.\x1b[0m")
+        answer = ask("Enter: copy the path of the .torrent · or write to Claude: ")
         if answer:
             continue
         subprocess.run(["wl-copy", torrent], stdin=subprocess.DEVNULL)
+        print("  \x1b[32m3. The path of the .torrent is in the clipboard.\x1b[0m")
         print(wait_for_rutracker(torrent, paths, since))
         return
 
