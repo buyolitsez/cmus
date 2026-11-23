@@ -4,8 +4,10 @@ import gzip
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 
 REMOTE = "b2music:buyolitsez-music"
 OUT = os.path.expanduser("~/.cache/cmus-b2")
@@ -86,22 +88,94 @@ def picard(paths):
     subprocess.run(["picard", "--stand-alone-instance", *paths], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def band_drop(path, above):
-    """How much quieter, in dB, 30 s in the middle of the track are above `above` Hz than at 11-15 kHz. Encoders
-    cut the highs: MP3 at 16-19 kHz, YouTube's streams at 16 kHz, so a file made from a lossy one has next to
-    nothing up there (a drop over 45 dB), and a real one has something. None if ffmpeg could not tell."""
-    sec = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
-                               capture_output=True, text=True).stdout or 0)
+def load_env():
+    env = os.path.expanduser("~/.config/cmus-b2/env")
+    if os.path.exists(env):
+        for line in open(env, encoding="utf-8"):
+            k, _, v = line.strip().partition("=")
+            if k and not k.startswith("#"):
+                os.environ.setdefault(k, v.strip().strip("'\""))
 
-    def level(filters):
-        out = subprocess.run(["nice", "ffmpeg", "-nostdin", "-hide_banner", "-ss", str(max(sec / 2 - 15, 0)), "-t", "30",
-                              "-i", path, "-af", filters + "astats=measure_perchannel=none", "-f", "null", "-"],
-                             capture_output=True, text=True).stderr
-        m = re.findall(r"RMS level dB: (-?[\d.]+|-inf)", out)
-        return float(m[-1]) if m else None
 
-    mid, high = level("highpass=f=11000," * 4 + "lowpass=f=15000," * 4), level(f"highpass=f={above}," * 8)
-    return None if mid is None or high is None else mid - high
+BANDS = 500  # Hz: the spectrum of a track is kept in bands this wide
+
+
+def analyze(path, rate, channels):
+    """One full decode of a track: what ffmpeg reports wrong, the dynamic range as foobar's DR Meter measures it
+    (per channel, the RMS of the loudest 20% of 3 s blocks against the second highest block peak), the peak and
+    RMS in dBFS, and the average spectrum in BANDS-wide bands (dB), which shows a cut made by a lossy encoder."""
+    import numpy as np  # here, as the other scripts do without it
+    block = int(rate * 3)
+    with tempfile.TemporaryFile() as err:
+        p = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-map", "0:a:0", "-f", "f32le",
+                              "-acodec", "pcm_f32le", "-"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=err)
+        rms, peaks, square, frames = [], [], np.zeros(channels), 0
+        window, power = np.hanning(8192), np.zeros(4097)
+        while buf := p.stdout.read(block * channels * 4):
+            x = np.frombuffer(buf[:len(buf) // (4 * channels) * 4 * channels], np.float32).reshape(-1, channels)
+            sq = (x.astype(np.float64) ** 2).sum(axis=0)
+            square, frames = square + sq, frames + len(x)
+            peaks.append(np.abs(x).max(axis=0))
+            if len(x) == block:  # the last, shorter block counts for the peaks only, as in DR Meter
+                rms.append(np.sqrt(2 * sq / len(x)))
+            if len(x) >= 8192:
+                power += np.abs(np.fft.rfft(x[:8192].mean(axis=1) * window)) ** 2
+        p.wait()
+        err.seek(0)
+        errors = err.read().decode("utf-8", "replace").strip()
+    if not frames:
+        return errors or "nothing decoded", None
+    peaks = np.sort(np.array(peaks), axis=0)
+    second = peaks[-2] if len(peaks) > 1 else peaks[-1]
+    dr = []
+    for ch in range(channels):
+        loud = np.sort([b[ch] for b in rms])[-max(1, int(len(rms) * 0.2)):] if rms else np.array([0.0])
+        top = np.sqrt(np.mean(loud ** 2))
+        dr.append(20 * np.log10(second[ch] / top) if top > 0 and second[ch] > 0 else 0.0)
+    freqs = np.fft.rfftfreq(8192, 1 / rate)
+    db = 10 * np.log10(power + 1e-20)
+    bands = [round(float(db[(freqs >= f) & (freqs < f + BANDS)].mean()), 1) for f in range(0, rate // 2 - BANDS + 1, BANDS)]
+    level = lambda v: round(float(20 * np.log10(max(v, 1e-10))), 2)
+    return errors, {"dr": round(float(np.mean(dr)), 2), "peak": level(peaks[-1].max()),
+                    "rms": level(float(np.sqrt(2 * square.mean() / frames))), "bands": bands}
+
+
+def lossy_cut(bands):
+    """The steepest fall of the spectrum between 14 and 21 kHz, in dB over 1.5 kHz, and where it is (Hz).
+    A lossy encoder cuts sharply (at 15-17 kHz for MP3), a real recording rolls off gently: a fall of 9 dB
+    or more is a cut (measured on this collection: 10-18 dB on the tracks cut at 16.5 kHz, at most 7 elsewhere)."""
+    falls = [(bands[i - 2] - bands[i + 1], i * BANDS) for i in range(14000 // BANDS, min(21000 // BANDS, len(bands) - 1))]
+    return max(falls, default=(0, None))
+
+
+AUCDTECT = "~/.local/share/aucdtect/auCDtect.exe"  # or AUCDTECT=... in ~/.config/cmus-b2/env
+
+
+def aucdtect_exe():
+    """auCDtect.exe when it and wine are there, else None."""
+    load_env()
+    exe = os.path.expanduser(os.environ.get("AUCDTECT", AUCDTECT))
+    return exe if shutil.which("wine") and os.path.isfile(exe) else None
+
+
+def aucdtect(path, exe):
+    """auCDtect's report on a track (the check of CD audio rutracker asks for: CDDA, or MPEG for a file made
+    from a lossy one), run in wine on a 16 bit 44.1 kHz WAV of it."""
+    with tempfile.TemporaryDirectory(prefix="cmus-b2-aucdtect-") as tmp:
+        wav = os.path.join(tmp, os.path.splitext(os.path.basename(path))[0] + ".wav")
+        subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-map", "0:a:0", "-c:a", "pcm_s16le", "-ar", "44100", wav],
+                       capture_output=True, stdin=subprocess.DEVNULL)
+        out = subprocess.run(["nice", "wine", exe, "-m0", os.path.basename(wav)], cwd=tmp, stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, errors="replace",
+                             env={**os.environ, "WINEDEBUG": "-all"}).stdout
+    lines = [l.strip() for l in out.replace("\r", "\n").splitlines()]
+    return "\n".join(l for l in lines if l and not re.fullmatch(r"[\d.%\s|=#*-]*", l))  # not the progress
+
+
+def aucdtect_verdict(report):
+    """'CDDA 100%' or 'MPEG 98%' from auCDtect's report, or ''."""
+    m = re.search(r"looks like (\w+)(?:\s+with probability\s+(\d+)%)?", report or "")
+    return f"{m[1]} {m[2]}%" if m and m[2] else m[1] if m else ""
 
 
 class Node:
