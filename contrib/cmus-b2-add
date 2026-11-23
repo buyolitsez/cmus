@@ -8,8 +8,11 @@ takes a YouTube Music search ("artist album", or an artist's name for their
 discography) or link to an album, playlist or artist; p in the list of albums
 found plays an album or track with mpv before you download it. Tab switches the
 search to Soulseek (through slskd, contrib/slskd.service): the folders found,
-FLAC first, then the peers with a free slot; the first time it asks for the
-Soulseek account and keeps it in ~/.config/cmus-b2/slskd.env.
+FLAC first, then the peers with a free slot; "log" after the format means the
+folder has a CD ripper's log. The first time it asks for the Soulseek account and keeps it in
+~/.config/cmus-b2/slskd.env. A downloaded FLAC album that looks made from an MP3 (the spectrum
+cut sharply as MP3 encoders do) is not added; the status says why, and for the albums added
+what the check found (auCDtect too if installed) and the site in their tags.
 Shows the torrent's folders and files (or the albums found and their tracks) as a tree to mark what to download, asks
 Claude where each one goes in the music folder (next to the artist's albums if
 the artist is there, otherwise a new path in the same genre/artist/album
@@ -55,7 +58,8 @@ import urllib.request
 import anthropic
 import libtorrent as lt
 
-from cmus_b2 import REMOTE, band_drop, cmus, option, pick, picard, size
+from cmus_b2 import REMOTE, analyze, aucdtect, aucdtect_exe, aucdtect_verdict, cmus, load_env, lossy_cut, option, pick, \
+    picard, size
 
 AUDIO_EXT = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".ape", ".wv", ".aac"}
 COVER_EXT = {".jpg", ".jpeg", ".png"}
@@ -138,15 +142,6 @@ def log_usage(u):
         f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} cmus-b2-add tokens: in {u.input_tokens}, "
                 f"cache read {u.cache_read_input_tokens or 0}, cache write {u.cache_creation_input_tokens or 0}, "
                 f"out {u.output_tokens}\n")
-
-
-def load_env():
-    env = os.path.expanduser("~/.config/cmus-b2/env")
-    if os.path.exists(env):
-        for line in open(env, encoding="utf-8"):
-            k, _, v = line.strip().partition("=")
-            if k and not k.startswith("#"):
-                os.environ.setdefault(k, v.strip().strip("'\""))
 
 
 PLAN_SCHEMA = {
@@ -497,8 +492,9 @@ def slsk_login():
 
 
 def slsk_folders(query):
-    """Folders with audio found on Soulseek, FLAC first, then the peers with a free upload slot, a short
-    queue and fast uploads: dicts with name (unique, for the list), user, folder, kind ("FLAC 16/44.1"),
+    """Folders with audio found on Soulseek, FLAC first, then the peers with a free upload slot, a rip log, a short
+    queue and fast uploads: dicts with name (unique, for the list), user, folder, kind ("FLAC 16/44.1 log cue": a .log
+    next to a FLAC is mostly a CD ripper's, EAC or XLD, so the files are from a CD and not made from an MP3),
     queue (the peer's queue, None with a free upload slot) and files. A folder is an album folder (CD1/Disc 2
     stay inside it) and files are slskd's search results with their path relative to it (rel)."""
     slsk_login()
@@ -508,25 +504,29 @@ def slsk_folders(query):
         time.sleep(1)
         s = slskd(f"searches/{s['id']}")
     print()
-    found = {}
+    found, extras = {}, {}
     for r in slskd(f"searches/{s['id']}/responses"):
         paths = {f["filename"].replace("\\", "/"): f for f in r["files"]}
         albums = {album_of(p) for p in paths if os.path.splitext(p)[1].lower() in AUDIO_EXT}
         for p, f in paths.items():
-            if os.path.splitext(p)[1].lower() not in AUDIO_EXT | COVER_EXT:  # nfo, cue, exe and the like
-                continue
             d = max((d for d in albums if p.startswith(d + "/")), key=len, default=None)
+            ext = os.path.splitext(p)[1].lower()
+            if d is not None and ext in {".log", ".cue"}:
+                extras.setdefault((r["username"], d), set()).add(ext[1:])
+            if ext not in AUDIO_EXT | COVER_EXT:  # nfo, cue, exe and the like
+                continue
             if d is not None:
                 found.setdefault((r["username"], d), (r, []))[1].append({**f, "rel": p[len(d) + 1:]})
     urllib.request.urlopen(urllib.request.Request(SLSKD + f"searches/{s['id']}", method="DELETE"), timeout=30)
 
     def rank(x):
-        r, files = x
+        (user, d), (r, files) = x
         exts = {os.path.splitext(f["rel"])[1].lower() for f in files} & AUDIO_EXT
-        return exts != {".flac"}, not r["hasFreeUploadSlot"], r["queueLength"], -r["uploadSpeed"]
+        return (exts != {".flac"}, not r["hasFreeUploadSlot"], "log" not in extras.get((user, d), ()),
+                r["queueLength"], -r["uploadSpeed"])
 
     out, names = [], set()
-    for (user, d), (r, files) in sorted(found.items(), key=lambda x: rank(x[1]))[:100]:
+    for (user, d), (r, files) in sorted(found.items(), key=rank)[:100]:
         audio = [f for f in files if os.path.splitext(f["rel"])[1].lower() in AUDIO_EXT]
         kind = "+".join(sorted({os.path.splitext(f["rel"])[1][1:].upper() for f in audio}))
         f = audio[0]
@@ -534,6 +534,7 @@ def slsk_folders(query):
             kind += f" {f['bitDepth']}/{f['sampleRate'] / 1000:g}"
         elif f.get("bitRate"):
             kind += f" {f['bitRate']}k"
+        kind = " ".join([kind, *sorted(extras.get((user, d), ()))])
         slot = "" if r["hasFreeUploadSlot"] else f", queue {r['queueLength']}"
         base = name = f"{kind}  {' ∕ '.join(d.split('/')[-2:])}  ({user}{slot})".replace("/", "∕")
         n = 2
@@ -656,11 +657,43 @@ def looks_like(path, ext):
             ".ape": h[:4] == b"MAC ", ".wv": h[:4] == b"wvpk"}.get(ext, False)
 
 
+def source_tag(path):
+    """Where the file says it is from: the site of a URL in its tags (bandcamp.com), else the start of its
+    comment, or ""."""
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format_tags", "-of", "json", path],
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    tags = {k.lower(): str(v) for k, v in json.loads(r.stdout or "{}").get("format", {}).get("tags", {}).items()}
+    text = " ".join(v for k, v in tags.items() if k in {"url", "www", "purl", "source", "comment", "description"})
+    url = re.search(r"https?://(?:www\.)?([^/\s]+)", text)
+    return url[1] if url else " ".join(text.split())[:40]
+
+
+def flac_check(flacs):
+    """Whether FLAC files are what they seem: (problem, note). The problem says why they look made from an MP3
+    (the spectrum of most tracks falls sharply above 14 kHz, as an MP3 encoder cuts it, see lossy_cut), else "";
+    the note is the check in short, with auCDtect's verdict on one track if it is installed."""
+    cuts = []
+    for n, path in enumerate(flacs, 1):
+        say(f"checking the spectrum {n}/{len(flacs)}")
+        st = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+                                        "stream=sample_rate,channels", "-of", "json", path],
+                                       capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout)["streams"][0]
+        cuts.append(lossy_cut((analyze(path, int(st["sample_rate"]), st["channels"])[1] or {}).get("bands", [])))
+    cut = [c for c in cuts if c[0] >= 9]
+    note = f"cut at {max(cut)[1] / 1000:g} kHz on {len(cut)}/{len(flacs)} tracks" if cut else "spectrum fine"
+    if exe := aucdtect_exe():
+        say("checking with auCDtect")
+        verdict = aucdtect_verdict(aucdtect(flacs[max(range(len(flacs)), key=lambda i: cuts[i][0])], exe))  # the most cut
+        note += f", auCDtect {verdict or 'gave no verdict'}"
+    return (f"looks made from an MP3 ({note})" if len(cut) * 2 >= len(flacs) else ""), note
+
+
 def check_album(folder, remove=True):
     """Checks downloaded files before they go to the bucket: removes what is neither audio nor a cover, and
-    returns (problems, warnings). Problems (audio that is not what its extension says or broken FLAC) mean the
-    album should not be added; a warning is a FLAC that looks made from an MP3."""
-    problems, flacs = [], []
+    returns (problems, notes). Problems (audio that is not what its extension says, broken FLAC or FLAC made
+    from an MP3) mean the album should not be added; the notes say what is known of the source: the FLAC check
+    and the site in the tags."""
+    problems, flacs, audio = [], [], []
     for root, _, files in os.walk(folder):
         for name in files:
             path = os.path.join(root, name)
@@ -668,6 +701,8 @@ def check_album(folder, remove=True):
             if ext in AUDIO_EXT | COVER_EXT and looks_like(path, ext):
                 if ext == ".flac":
                     flacs.append(path)
+                if ext in AUDIO_EXT:
+                    audio.append(path)
             elif ext in AUDIO_EXT:
                 problems.append(f"{rel}: not {ext[1:].upper()} inside")
             elif remove:
@@ -681,14 +716,16 @@ def check_album(folder, remove=True):
             ["nice", "ffmpeg", "-nostdin", "-v", "error", "-xerror", "-i", path, "-f", "null", "-"]
         if subprocess.run(test, capture_output=True).returncode:
             problems.append(f"{os.path.relpath(path, folder)}: broken FLAC")
-    warnings = []
+    notes = []
     if flacs:
-        drop = band_drop(sorted(flacs, key=os.path.getsize)[len(flacs) // 2], 19000)
-        if drop is not None and drop > 45:
-            warnings.append(f"{os.path.basename(folder)} may be an MP3 made into FLAC (nothing above 19 kHz)")
+        problem, note = flac_check(sorted(flacs))
+        problems += [problem] if problem else []
+        notes.append(note)
+    if audio and (src := source_tag(min(audio))):
+        notes.append(f"tags: {src}")
     for p in problems:
         print(p)
-    return problems, warnings
+    return problems, [f"{os.path.basename(folder)}: {', '.join(notes)}"] if notes else []
 
 
 def discard(folder):
@@ -709,7 +746,7 @@ def run_job(d):
         f.write(str(os.getpid()))
     job = json.load(open(os.path.join(d, "job.json"), encoding="utf-8"))
     try:
-        plan, skipped, warnings = {}, [], []
+        plan, skipped, notes = {}, [], []
         for x in job["albums"]:
             folder = os.path.join(music, x["target"])
             print(f"Downloading {x['target']}")
@@ -723,12 +760,12 @@ def run_job(d):
                     skipped.append(f"{os.path.basename(x['target'])} ({len(failed)} files did not download"
                                    + (f": {reason}" if reason else "") + ")")
                     continue
-            problems, warns = check_album(folder)
+            problems, ns = check_album(folder)
             if problems:
                 discard(folder)
                 skipped.append(f"{os.path.basename(x['target'])} ({problems[0]})")
                 continue
-            warnings += warns
+            notes += ns
             plan[x["target"]] = x["target"]
         if plan:
             say("waiting for another album to be added")
@@ -737,7 +774,7 @@ def run_job(d):
                 upload(plan, job["tag"])
             remove_local(plan, job["local_copy"])
         say(("done" + (", skipped: " + ", ".join(skipped) if skipped else "") if plan else
-             "error: skipped " + ", ".join(skipped)) + "".join(f", warning: {w}" for w in warnings))
+             "error: skipped " + ", ".join(skipped)) + "".join(f"; {n}" for n in notes))
     except Exception as e:
         traceback.print_exc()
         say(f"error: {e} (log: {d}/log)")
@@ -901,8 +938,8 @@ def add_torrent(path):
     for target in plan.values():
         p, w = check_album(os.path.join(music, target), remove=False)
         problems, warnings = problems + p, warnings + w
-    for w in warnings:
-        print("Warning:", w)
+    for n in warnings:
+        print(n)
     if problems and ask("Upload anyway? [y/N] ").lower() != "y":
         sys.exit("Not uploaded, the files are in " + ", ".join(os.path.join(music, t) for t in plan.values()))
     upload(plan)
