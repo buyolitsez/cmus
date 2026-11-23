@@ -686,6 +686,7 @@ def flac_check(flacs):
         say("checking with auCDtect")
         verdict = aucdtect_verdict(aucdtect(flacs[max(range(len(flacs)), key=lambda i: cuts[i][0])], exe))  # the most cut
         note += f", auCDtect {verdict or 'gave no verdict'}"
+    print()
     return (f"looks made from an MP3 ({note})" if len(cut) * 2 >= len(flacs) else ""), note
 
 
@@ -693,12 +694,13 @@ def check_album(folder, remove=True):
     """Checks downloaded files before they go to the bucket: removes what is neither audio nor a cover, and
     returns (problems, notes). Problems (audio that is not what its extension says, broken FLAC or FLAC made
     from an MP3) mean the album should not be added; the notes say what is known of the source: the FLAC check
-    and the site in the tags."""
-    problems, flacs, audio = [], [], []
+    the site in the tags and a rip log."""
+    problems, flacs, audio, logs = [], [], [], False
     for root, _, files in os.walk(folder):
         for name in files:
             path = os.path.join(root, name)
             rel, ext = os.path.relpath(path, folder), os.path.splitext(name)[1].lower()
+            logs = logs or ext == ".log"
             if ext in AUDIO_EXT | COVER_EXT and looks_like(path, ext):
                 if ext == ".flac":
                     flacs.append(path)
@@ -717,7 +719,7 @@ def check_album(folder, remove=True):
             ["nice", "ffmpeg", "-nostdin", "-v", "error", "-xerror", "-i", path, "-f", "null", "-"]
         if subprocess.run(test, capture_output=True).returncode:
             problems.append(f"{os.path.relpath(path, folder)}: broken FLAC")
-    notes = []
+    notes = ["rip log"] if logs else []
     if flacs:
         problem, note = flac_check(sorted(flacs))
         problems += [problem] if problem else []
