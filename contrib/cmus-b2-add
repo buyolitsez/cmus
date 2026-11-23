@@ -58,7 +58,7 @@ import urllib.request
 import anthropic
 import libtorrent as lt
 
-from cmus_b2 import REMOTE, analyze, aucdtect, aucdtect_exe, aucdtect_verdict, cmus, load_env, lossy_cut, option, pick, \
+from cmus_b2 import BANDS, REMOTE, analyze, aucdtect, aucdtect_exe, aucdtect_verdict, cmus, load_env, lossy_cut, option, pick, \
     picard, size
 
 AUDIO_EXT = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".ape", ".wv", ".aac"}
@@ -670,15 +670,16 @@ def source_tag(path):
 
 def flac_check(flacs):
     """Whether FLAC files are what they seem: (problem, note). The problem says why they look made from an MP3
-    (the spectrum of most tracks falls sharply above 14 kHz, as an MP3 encoder cuts it, see lossy_cut), else "";
-    the note is the check in short, with auCDtect's verdict on one track if it is installed."""
+    (the spectrum of most tracks falls sharply at 14-19 kHz, as an MP3 encoder cuts it, see lossy_cut), else "".
+    Not higher up: there a CD's own filter falls as sharply (Loveless, a CD rip with a log, at 20.5 kHz). The note is the check in short, with auCDtect's verdict on one track if it is installed."""
     cuts = []
     for n, path in enumerate(flacs, 1):
         say(f"checking the spectrum {n}/{len(flacs)}")
         st = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
                                         "stream=sample_rate,channels", "-of", "json", path],
                                        capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout)["streams"][0]
-        cuts.append(lossy_cut((analyze(path, int(st["sample_rate"]), st["channels"])[1] or {}).get("bands", [])))
+        bands = (analyze(path, int(st["sample_rate"]), st["channels"])[1] or {}).get("bands", [])
+        cuts.append(lossy_cut(bands[:19500 // BANDS]))
     cut = [c for c in cuts if c[0] >= 9]
     note = f"cut at {max(cut)[1] / 1000:g} kHz on {len(cut)}/{len(flacs)} tracks" if cut else "spectrum fine"
     if exe := aucdtect_exe():
