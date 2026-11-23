@@ -163,11 +163,40 @@ def analyze(path, rate, channels):
 
 
 def lossy_cut(bands):
-    """How many dB the spectrum falls from 13-14.5 kHz to 16.5-19.5 kHz (medians of the bands): a lossy encoder
-    cuts at 15-16 kHz, so a file made from MP3 shows a big fall, a real one a gentle slope."""
-    at = lambda lo, hi: float(np.median(bands[lo // BANDS:hi // BANDS])) if len(bands) > hi // BANDS else None
-    a, b = at(13000, 14500), at(16500, 19500)
-    return None if a is None or b is None else round(a - b)
+    """The steepest fall of the spectrum between 14 and 21 kHz, in dB over 1.5 kHz, and where it is (Hz).
+    A lossy encoder cuts sharply (at 15-17 kHz for MP3), a real recording rolls off gently: a fall of 9 dB
+    or more is a cut (measured on this collection: 10-18 dB on the tracks cut at 16.5 kHz, at most 7 elsewhere)."""
+    falls = [(bands[i - 2] - bands[i + 1], i * BANDS) for i in range(14000 // BANDS, min(21000 // BANDS, len(bands) - 1))]
+    return max(falls, default=(0, None))
+
+
+AUCDTECT = "~/.local/share/aucdtect/auCDtect.exe"  # or AUCDTECT=... in ~/.config/cmus-b2/env
+
+
+def aucdtect_exe():
+    """auCDtect.exe when it and wine are there, else None."""
+    load_env()
+    exe = os.path.expanduser(os.environ.get("AUCDTECT", AUCDTECT))
+    return exe if shutil.which("wine") and os.path.isfile(exe) else None
+
+
+def aucdtect(path, exe):
+    """auCDtect's report on a track (the check of CD audio rutracker asks for: CDDA, or MPEG for a file made
+    from a lossy one), run in wine on a 16 bit 44.1 kHz WAV of it."""
+    with tempfile.TemporaryDirectory(prefix="cmus-b2-aucdtect-") as tmp:
+        wav = os.path.join(tmp, os.path.splitext(os.path.basename(path))[0] + ".wav")
+        run("ffmpeg", "-v", "error", "-i", path, "-map", "0:a:0", "-c:a", "pcm_s16le", "-ar", "44100", wav)
+        out = subprocess.run(["nice", "wine", exe, "-m0", os.path.basename(wav)], cwd=tmp, stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, errors="replace",
+                             env={**os.environ, "WINEDEBUG": "-all"}).stdout
+    lines = [l.strip() for l in out.replace("\r", "\n").splitlines()]
+    return "\n".join(l for l in lines if l and not re.fullmatch(r"[\d.%\s|=#*-]*", l))  # not the progress
+
+
+def aucdtect_verdict(report):
+    """'CDDA 100%' or 'MPEG 98%' from auCDtect's report, or ''."""
+    m = re.search(r"looks like (\w+)(?:\s+with probability\s+(\d+)%)?", report or "")
+    return f"{m[1]} {m[2]}%" if m and m[2] else m[1] if m else ""
 
 
 def probe(path):
@@ -442,6 +471,19 @@ class Release:
             print()
             save_cache(cache)
         self.tracks = {f: self.tracks[f] for f in self.audio}
+        exe = aucdtect_exe()
+        todo = [f for f in self.audio if exe and "aucdtect" not in self.tracks[f] and self.tracks[f]["codec"] in LOSSLESS
+                and self.tracks[f]["bits"] == 16 and self.tracks[f]["rate"] == 44100]
+        with concurrent.futures.ThreadPoolExecutor(2) as pool:  # wine on 2 cores: arch overheats on all of them
+            jobs = {pool.submit(aucdtect, os.path.join(mount, f), exe): f for f in todo}
+            for i, job in enumerate(concurrent.futures.as_completed(jobs), 1):
+                print(f"\r\x1b[KauCDtect {i}/{len(todo)}: {os.path.basename(jobs[job])}", end="", flush=True)
+                f = jobs[job]
+                self.tracks[f]["aucdtect"] = job.result()
+                cache["probe"][f] = {"stamp": stamps[f], "time": time.time(), "data": self.tracks[f]}
+        if todo:
+            print()
+            save_cache(cache)
         t = list(self.tracks.values())
         self.codecs = sorted({x["codec"] for x in t})
         self.lossless = all(c in LOSSLESS for c in self.codecs)
@@ -449,11 +491,11 @@ class Release:
 
     def worst(self, audio):
         """The track whose spectrum looks most like a lossy source's (the one for the spectrogram)."""
-        return max(audio, key=lambda f: lossy_cut(self.tracks[f].get("bands", [])) or 0)
+        return max(audio, key=lambda f: lossy_cut(self.tracks[f].get("bands", []))[0])
 
     def cut_tracks(self, audio):
-        """The tracks with a lossy encoder's cut at 15-16 kHz (a fall of over 25 dB above it)."""
-        return [f for f in audio if (lossy_cut(self.tracks[f].get("bands", [])) or 0) > 25]
+        """The tracks cut like a lossy encoder cuts."""
+        return [f for f in audio if lossy_cut(self.tracks[f].get("bands", []))[0] >= 9]
 
     def dr_log(self, d):
         """The album's DR in the layout of foobar's DR Meter log."""
@@ -510,7 +552,7 @@ class Release:
         for d in self.dirs:
             cut = self.cut_tracks(self.album(d))
             if cut and self.lossless:
-                out.append(f"{os.path.basename(d)}: {len(cut)} of {len(self.album(d))} tracks are cut at 15-16 kHz "
+                out.append(f"{os.path.basename(d)}: {len(cut)} of {len(self.album(d))} tracks are cut at 15-17 kHz "
                            "like a file made from MP3 (lossy master or a transcode): rutracker asks for proof of the "
                            "source and the quality logs")
         bits = {d: max(self.tracks[f]["bits"] for f in self.album(d)) for d in self.dirs}
@@ -526,10 +568,11 @@ class Release:
         return (f"Folders in my library (genre/artist/album): {', '.join(self.dirs)}\n"
                 f"Codec {self.codec()}, {self.bitrate()}, {self.specs()}\n"
                 f"Tracks (path, artist, album artist, album, year, genre tags, title, length):\n" + "\n".join(lines) +
-                f"\nAlbums (folder, bits, DR, tracks cut at 15-16 kHz like MP3, source tags):\n" + "\n".join(
+                f"\nAlbums (folder, bits, DR, tracks cut at 15-17 kHz like MP3, auCDtect per track, source tags):\n" + "\n".join(
                     f"{d}\t{max(self.tracks[f]['bits'] for f in self.album(d))} bit\t"
                     f"DR{round(sum(self.tracks[f].get('dr', 0) for f in self.album(d)) / len(self.album(d)))}\t"
                     f"{len(self.cut_tracks(self.album(d)))} of {len(self.album(d))}\t"
+                    f"auCDtect: {', '.join(aucdtect_verdict(self.tracks[f].get('aucdtect')) or '—' for f in self.album(d))}\t"
                     + ("; ".join(x for x in dict.fromkeys(self.tracks[f].get("source", "") for f in self.album(d)) if x) or "none")
                     for d in self.dirs) +
                 f"\nOther files (path, size):\n{self.others() or 'none'}\n"
@@ -609,6 +652,9 @@ def album_info(r, x, d, spectra):
     lines = [f"[b]Носитель[/b]: {a.get('media') or '—'}", f"[b]Источник[/b]: {source or '—'}",
              '[spoiler="Лог DR"][pre]', r.dr_log(d), "[/pre][/spoiler]",
              '[spoiler="Проверка качества"][pre]', r.quality(r.album(d)), "[/pre]"]
+    reports = [r.tracks[f].get("aucdtect") for f in r.album(d)]
+    if all(reports):
+        lines += ['[spoiler="Лог auCDtect"][pre]', "\n\n".join(reports), "[/pre][/spoiler]"]
     for full, thumb in spectra:
         lines.append(f"[url={full}][img]{thumb}[/img][/url]")
     return lines + ["[/spoiler]"]
@@ -758,7 +804,7 @@ def show_draft(r, x, before=None, title="Release"):
     row("Country", x["country"], "country")
     row("About", x["about"], "about", lines=3)
     row("Line-up", "; ".join(l.strip() for l in x["lineup"].splitlines() if l.strip()), "lineup", lines=2)
-    section("Albums (medium, source, DR, tracks cut at 16 kHz)")
+    section("Albums (medium, source, DR, bits, tracks cut like MP3, auCDtect)")
     was = {a["folder"].strip("/"): a for a in (before or {}).get("albums", [])}
     for d in r.dirs:
         a = next((a for a in x.get("albums", []) if a["folder"].strip("/") == d), {})
@@ -767,6 +813,10 @@ def show_draft(r, x, before=None, title="Release"):
         text = (f"{a.get('media') or '—'} · {a.get('source') or '—'}{'  ' + a['url'] if a.get('url') else ''} · "
                 f"DR{round(sum(r.tracks[f].get('dr', 0) for f in audio) / len(audio))}"
                 f" · {max(r.tracks[f]['bits'] for f in audio)} bit" + (f" · \x1b[31m{cut} of {len(audio)} cut\x1b[0m" if cut else ""))
+        verdicts = [aucdtect_verdict(r.tracks[f].get("aucdtect")) for f in audio]
+        if any(verdicts):
+            mpeg = sum(v.startswith("MPEG") for v in verdicts)
+            text += f" · auCDtect: {f'{mpeg} of {len(audio)} MPEG' if mpeg else 'CDDA'}"
         changed = before is not None and was.get(d) != a
         out = f"  {os.path.basename(d)[:28]:<29} {text}"
         print(f"\x1b[33m{out}\x1b[0m" if changed else out)
