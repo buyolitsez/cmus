@@ -7,10 +7,12 @@ albums (or the one under the cursor) in Picard first, as K does in cmus (contrib
 
 The files are read from the bucket mount (bucket_dir). Every track is probed (codec, bitrate, sample rate,
 decode errors, flac -t for FLAC) and two spectrograms are drawn. Claude fills in what the tags do not say
-(genre, country, the artist's name in the original script, the forum section, "about" and line-up; it can
-search the web) and changes the draft by what you write until you accept it: tags, names, deleting stray files
+(genre, country, the artist's name in the original script, the forum section, "about", line-up, and each
+album's medium and source; it can search the web) and changes the draft by what you write until you accept it: tags, names, deleting stray files
 and adding files of ~/Downloads to the albums (a cover you found). The notes you leave as they are are not
-shown again. Then the cover (at most 500 px)
+shown again. Each album of the topic gets its medium and source, a DR log
+(as foobar's DR Meter makes it), the quality check and the spectrogram of its track that looks most like a
+lossy source; 24 bit albums go as a Hi-Res release of their own. Then the covers (at most 500 px)
 and the spectrograms are uploaded (to imageban.ru with IMAGEBAN_KEY, else imgbox.com), the .torrent and
 the texts are written to ~/Downloads/rutracker/<release>/, and the title and the description go to the
 clipboard one after the other, while Firefox shows the rutracker search for the album, to check it is not there yet.
@@ -18,7 +20,7 @@ Nothing is posted: you create the topic on rutracker yourself. rutracker keeps t
 download its .torrent (with your passkey) to ~/Downloads, the window finds it and hands it to cmus-b2-seed,
 which seeds it from the bucket (view 9).
 
-Needs python-libtorrent, python-anthropic, python-mutagen, python-requests, ffmpeg, flac, wl-copy and
+Needs python-libtorrent, python-anthropic, python-mutagen, python-numpy, python-requests, ffmpeg, flac, wl-copy and
 ANTHROPIC_API_KEY (in the environment or as ANTHROPIC_API_KEY=... in ~/.config/cmus-b2/env).
 """
 import argparse
@@ -44,9 +46,10 @@ import warnings
 import anthropic
 import libtorrent as lt
 import mutagen
+import numpy as np
 import requests
 
-from cmus_b2 import OUT, REMOTE, band_drop, key_of, option, pick, query, size, trash
+from cmus_b2 import OUT, REMOTE, key_of, option, pick, query, size, trash
 
 AUDIO_EXT = {".flac", ".mp3", ".m4a", ".ogg", ".opus", ".wav", ".ape", ".wv", ".aac"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png"}
@@ -67,7 +70,7 @@ New Age, Relax, Meditative & Flamenco; Рэп, Хип-Хоп, R'n'B; Reggae, Ska
 Drum & Bass, Jungle, Breakbeat, Dubstep, IDM, Electro; Chillout, Lounge, Downtempo, Trip-Hop;
 Traditional Electronic, Ambient, Modern Classical, Electroacoustic, Experimental;
 Industrial, Noise, EBM, Dark Electro, Aggrotech, Cyberpunk, Synthpop, New Wave
-Hi-Res форматы, оцифровки: Hi-Res stereo и многоканальная музыка (24 bit above 48 kHz); Оцифровки с аналоговых носителей"""
+Hi-Res форматы, оцифровки: Hi-Res stereo и многоканальная музыка (any 24 bit release goes here); Оцифровки с аналоговых носителей"""
 DOWNLOADS = os.path.expanduser("~/Downloads")
 warnings.filterwarnings("ignore", category=DeprecationWarning)  # python-libtorrent's file_storage calls
 
@@ -117,12 +120,63 @@ def tag(tags, name):
     return str(v[0]).strip() if v else ""
 
 
+BANDS = 500  # Hz: the spectrum of a track is kept in bands this wide
+
+
+def analyze(path, rate, channels):
+    """One full decode of a track: what ffmpeg reports wrong, the dynamic range as foobar's DR Meter measures it
+    (per channel, the RMS of the loudest 20% of 3 s blocks against the second highest block peak), the peak and
+    RMS in dBFS, and the average spectrum in BANDS-wide bands (dB), which shows a cut made by a lossy encoder."""
+    block = int(rate * 3)
+    with tempfile.TemporaryFile() as err:
+        p = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", "-i", path, "-map", "0:a:0", "-f", "f32le",
+                              "-acodec", "pcm_f32le", "-"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=err)
+        rms, peaks, square, frames = [], [], np.zeros(channels), 0
+        window, power = np.hanning(8192), np.zeros(4097)
+        while buf := p.stdout.read(block * channels * 4):
+            x = np.frombuffer(buf[:len(buf) // (4 * channels) * 4 * channels], np.float32).reshape(-1, channels)
+            sq = (x.astype(np.float64) ** 2).sum(axis=0)
+            square, frames = square + sq, frames + len(x)
+            peaks.append(np.abs(x).max(axis=0))
+            if len(x) == block:  # the last, shorter block counts for the peaks only, as in DR Meter
+                rms.append(np.sqrt(2 * sq / len(x)))
+            if len(x) >= 8192:
+                power += np.abs(np.fft.rfft(x[:8192].mean(axis=1) * window)) ** 2
+        p.wait()
+        err.seek(0)
+        errors = err.read().decode("utf-8", "replace").strip()
+    if not frames:
+        return errors or "nothing decoded", None
+    peaks = np.sort(np.array(peaks), axis=0)
+    second = peaks[-2] if len(peaks) > 1 else peaks[-1]
+    dr = []
+    for ch in range(channels):
+        loud = np.sort([b[ch] for b in rms])[-max(1, int(len(rms) * 0.2)):] if rms else np.array([0.0])
+        top = np.sqrt(np.mean(loud ** 2))
+        dr.append(20 * np.log10(second[ch] / top) if top > 0 and second[ch] > 0 else 0.0)
+    freqs = np.fft.rfftfreq(8192, 1 / rate)
+    db = 10 * np.log10(power + 1e-20)
+    bands = [round(float(db[(freqs >= f) & (freqs < f + BANDS)].mean()), 1) for f in range(0, rate // 2 - BANDS + 1, BANDS)]
+    level = lambda v: round(float(20 * np.log10(max(v, 1e-10))), 2)
+    return errors, {"dr": round(float(np.mean(dr)), 2), "peak": level(peaks[-1].max()),
+                    "rms": level(float(np.sqrt(2 * square.mean() / frames))), "bands": bands}
+
+
+def lossy_cut(bands):
+    """How many dB the spectrum falls from 13-14.5 kHz to 16.5-19.5 kHz (medians of the bands): a lossy encoder
+    cuts at 15-16 kHz, so a file made from MP3 shows a big fall, a real one a gentle slope."""
+    at = lambda lo, hi: float(np.median(bands[lo // BANDS:hi // BANDS])) if len(bands) > hi // BANDS else None
+    a, b = at(13000, 14500), at(16500, 19500)
+    return None if a is None or b is None else round(a - b)
+
+
 def probe(path):
-    """Codec, bitrate and the rest of one audio file, its tags, and what a full decode found wrong."""
+    """Codec, bitrate and the rest of one audio file, its tags, and what a full decode found (errors, DR, the
+    spectrum)."""
     r = json.loads(run("ffprobe", "-v", "error", "-show_format", "-show_streams", "-of", "json", path).stdout)
     st = next(s for s in r["streams"] if s["codec_type"] == "audio")
     dur = float(r["format"]["duration"])
-    errors = run("ffmpeg", "-v", "error", "-i", path, "-map", "0:a", "-f", "null", "-").stderr.strip()
+    errors, analysis = analyze(path, int(st["sample_rate"]), st["channels"])
     if st["codec_name"] == "flac" and run("flac", "-t", "-s", path).returncode:
         errors = (errors + "\nflac -t failed").strip()
     try:
@@ -136,7 +190,10 @@ def probe(path):
             "kbps": int(r["format"]["size"]) * 8 / dur / 1000, "duration": dur, "errors": errors,
             "title": tag(tags, "title"), "artist": tag(tags, "artist"), "albumartist": tag(tags, "albumartist"),
             "album": tag(tags, "album"),
-            "date": tag(tags, "date")[:4], "genre": tag(tags, "genre"), "comment": comment}
+            "date": tag(tags, "date")[:4], "genre": tag(tags, "genre"), "comment": comment,
+            "source": " ".join(tag(mutagen.File(path) or {}, k) for k in ("URL", "WWW", "COMMENT", "DESCRIPTION")
+                               if tags).strip()[:300],
+            **(analysis or {})}
 
 
 def described(path):
@@ -233,8 +290,7 @@ FIELDS = {
     "year": "year of release, or a range for several albums",
     "genre": "2-4 genres in English, comma-separated, e.g. 'Chamber Jazz, Ambient, New Age'",
     "country": "the artist's country in Russian, e.g. 'Япония'",
-    "web": "'yes' if this is a digital (WEB) release, 'no' for a CD/vinyl rip, '' if unknown",
-    "source_url": "the official page of the release (Bandcamp, the label, the artist) found on the web, or ''",
+    "web": "'yes' if all the albums are digital (WEB) releases, 'no' for CD/vinyl rips, '' if unknown",
     "about": "about the album in Russian, one or two short paragraphs, facts only; '' if nothing reliable is known",
     "lineup": "line-up in Russian, one person per line ('Имя — роль'); '' if unknown",
     "forum": "the rutracker forum that fits, one of <forums>, with its lossy or lossless subforum as rutracker "
@@ -261,13 +317,20 @@ CHANGES = {  # what Claude may change, when I ask it to
                   {"source": "the file, as listed in <downloads>",
                    "path": "where it goes: an album folder of the facts and the name, e.g. '.../cover.jpg'"}),
 }
+ALBUMS = {"albums": ("each album folder of the facts with its medium and source, which rutracker asks for under "
+                     "every album", {
+    "folder": "the album folder, as in the facts",
+    "media": "the medium in Russian as rutracker writes it: 'WEB', 'CD', 'Винил', 'Кассета'; '' if unknown",
+    "source": "where the files come from: the store or site ('Qobuz', 'Bandcamp', 'Deezer', 'официальный сайт', "
+              "'собственный рип'), from the source tags in the facts or what I tell you; '' if unknown",
+    "url": "the page of the album in that store or site, or ''"})}
 SCHEMA = {"type": "object", "properties": {
     **{k: {"type": "string", "description": v} for k, v in FIELDS.items()},
     **{k: {"type": "array", "description": d, "items": {
         "type": "object", "additionalProperties": False, "required": list(props),
         "properties": {n: {"type": "string", "description": v, **({"enum": TAGS} if n == "tag" else {})}
-                       for n, v in props.items()}}} for k, (d, props) in CHANGES.items()}},
-    "required": [*FIELDS, *CHANGES], "additionalProperties": False}
+                       for n, v in props.items()}}} for k, (d, props) in {**CHANGES, **ALBUMS}.items()}},
+    "required": [*FIELDS, *CHANGES, *ALBUMS], "additionalProperties": False}
 
 
 DISCOGS = {"name": "discogs", "description": "Reads a release or master page of Discogs (its site does not let the "
@@ -362,8 +425,8 @@ class Release:
         cache = load_cache()
         stamps = {f: [os.stat(os.path.join(mount, f)).st_size, os.stat(os.path.join(mount, f)).st_mtime]
                   for f in self.audio}
-        self.tracks = {f: cache["probe"][f]["data"] for f in self.audio
-                       if cache["probe"].get(f, {}).get("stamp") == stamps[f]}
+        self.tracks = {f: cache["probe"][f]["data"] for f in self.audio  # (without "dr": checked by an older version)
+                       if cache["probe"].get(f, {}).get("stamp") == stamps[f] and "dr" in cache["probe"][f]["data"]}
         todo = [f for f in self.audio if f not in self.tracks]
         if len(todo) < len(self.audio):
             print(f"{len(self.audio) - len(todo)} files were checked before and did not change.")
@@ -383,9 +446,34 @@ class Release:
         self.codecs = sorted({x["codec"] for x in t})
         self.lossless = all(c in LOSSLESS for c in self.codecs)
         self.duration = sum(x["duration"] for x in t)
-        mid = sorted(self.audio, key=lambda f: self.tracks[f]["duration"])[len(self.audio) // 2]
-        self.cutoff = 19000 if self.lossless else 17500
-        self.drop = band_drop(os.path.join(mount, mid), self.cutoff)
+
+    def worst(self, audio):
+        """The track whose spectrum looks most like a lossy source's (the one for the spectrogram)."""
+        return max(audio, key=lambda f: lossy_cut(self.tracks[f].get("bands", [])) or 0)
+
+    def cut_tracks(self, audio):
+        """The tracks with a lossy encoder's cut at 15-16 kHz (a fall of over 25 dB above it)."""
+        return [f for f in audio if (lossy_cut(self.tracks[f].get("bands", [])) or 0) > 25]
+
+    def dr_log(self, d):
+        """The album's DR in the layout of foobar's DR Meter log."""
+        audio = self.album(d)
+        t = [self.tracks[f] for f in audio]
+        head = t[0]
+        line = "-" * 80
+        rows = [f"DR{round(x['dr']):<5} {x['peak']:7.2f} dB  {x['rms']:7.2f} dB  {mmss(x['duration']):>8}  "
+                f"{os.path.splitext(os.path.basename(f))[0]}" for f, x in zip(audio, t)]
+        kbps = sum(x["kbps"] * x["duration"] for x in t) / sum(x["duration"] for x in t)
+        return "\n".join([line, f"Analyzed: {head['albumartist'] or head['artist']} / {head['album']}", line, "",
+                          "DR         Peak         RMS     Duration  Track", line, *rows, line, "",
+                          f"Number of tracks:  {len(t)}",
+                          f"Official DR value: DR{round(sum(x['dr'] for x in t) / len(t))}", "",
+                          f"Samplerate:        {'/'.join(str(r) for r in sorted({x['rate'] for x in t}))} Hz",
+                          f"Channels:          {'/'.join(str(c) for c in sorted({x['channels'] for x in t}))}",
+                          f"Bits per sample:   {'/'.join(str(b) for b in sorted({x['bits'] for x in t if x['bits']}))}",
+                          f"Bitrate:           {kbps:.0f} kbps",
+                          f"Codec:             {'/'.join(sorted({CODEC.get(x['codec'], x['codec']) for x in t}))}",
+                          "=" * 80])
 
     def codec(self):
         return "/".join(CODEC.get(c, c.upper()) for c in self.codecs)
@@ -419,9 +507,15 @@ class Release:
         avg = sum(x["kbps"] for x in t.values()) / len(t)
         if not self.lossless and avg < 192:
             out.append(f"average bitrate {avg:.0f} kbps is below the usual minimum of 192")
-        if self.drop is not None and self.drop > 45:
-            out.append(f"nothing above {self.cutoff / 1000:g} kHz: made from a lossy file of lower quality, "
-                       "and the spectrograms in the post show it")
+        for d in self.dirs:
+            cut = self.cut_tracks(self.album(d))
+            if cut and self.lossless:
+                out.append(f"{os.path.basename(d)}: {len(cut)} of {len(self.album(d))} tracks are cut at 15-16 kHz "
+                           "like a file made from MP3 (lossy master or a transcode): rutracker asks for proof of the "
+                           "source and the quality logs")
+        bits = {d: max(self.tracks[f]["bits"] for f in self.album(d)) for d in self.dirs}
+        if len(set(bits.values())) > 1:
+            out.append("16 and 24 bit albums together: rutracker wants the 24 bit ones in a Hi-Res release of their own")
         return out
 
     def facts(self):
@@ -432,6 +526,12 @@ class Release:
         return (f"Folders in my library (genre/artist/album): {', '.join(self.dirs)}\n"
                 f"Codec {self.codec()}, {self.bitrate()}, {self.specs()}\n"
                 f"Tracks (path, artist, album artist, album, year, genre tags, title, length):\n" + "\n".join(lines) +
+                f"\nAlbums (folder, bits, DR, tracks cut at 15-16 kHz like MP3, source tags):\n" + "\n".join(
+                    f"{d}\t{max(self.tracks[f]['bits'] for f in self.album(d))} bit\t"
+                    f"DR{round(sum(self.tracks[f].get('dr', 0) for f in self.album(d)) / len(self.album(d)))}\t"
+                    f"{len(self.cut_tracks(self.album(d)))} of {len(self.album(d))}\t"
+                    + ("; ".join(x for x in dict.fromkeys(self.tracks[f].get("source", "") for f in self.album(d)) if x) or "none")
+                    for d in self.dirs) +
                 f"\nOther files (path, size):\n{self.others() or 'none'}\n"
                 f"Checks found: {'; '.join(self.warnings()) or 'nothing wrong'}")
 
@@ -499,12 +599,28 @@ def albums_word(n):
         "альбома" if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else "альбомов"
 
 
-def post(r, x, cover="ОБЛОЖКА", spectra=(), covers=()):
-    """The BBCode of the topic. Several albums get Nikolai's layout of a collection: the fields of all of them,
-    then a spoiler per album with its cover (covers, in the order of r.dirs), length and tracklist."""
+def album_info(r, x, d, spectra):
+    """What rutracker asks for under each album: the medium and the source, the DR log, and the quality check
+    with the spectrogram of its worst track (spectra: its uploaded images)."""
+    a = next((a for a in x.get("albums", []) if a["folder"].strip("/") == d), {})
+    source = a.get("source", "")
+    if a.get("url"):
+        source = f"[url={a['url']}]{source or a['url']}[/url]"
+    lines = [f"[b]Носитель[/b]: {a.get('media') or '—'}", f"[b]Источник[/b]: {source or '—'}",
+             '[spoiler="Лог DR"][pre]', r.dr_log(d), "[/pre][/spoiler]",
+             '[spoiler="Проверка качества"][pre]', r.quality(r.album(d)), "[/pre]"]
+    for full, thumb in spectra:
+        lines.append(f"[url={full}][img]{thumb}[/img][/url]")
+    return lines + ["[/spoiler]"]
+
+
+def post(r, x, cover="ОБЛОЖКА", spectra=None, covers=()):
+    """The BBCode of the topic. Every album gets its medium and source, DR log, quality check and spectrograms
+    (spectra: the images of each album folder). Several albums get Nikolai's layout of a collection: the fields
+    of all of them, then a spoiler per album with its cover (covers, in the order of r.dirs), length and
+    tracklist and the rest."""
+    spectra = spectra or {}
     scans = len([f for f in r.files if os.path.splitext(f)[1].lower() in IMAGE_EXT]) > len(r.dirs)
-    source = (f"[url={x['source_url']}]{'WEB' if x['web'] == 'yes' else 'официальная страница'}[/url]"
-              if x["source_url"] else "WEB" if x["web"] == "yes" else "")
     many = len(r.dirs) > 1
     lines = [f"[size=24]{x['artist']} {'-' if many else '/'} {x['album']}[/size]", "", f"[img=right]{cover}[/img]", ""]
     if many:
@@ -519,36 +635,27 @@ def post(r, x, cover="ОБЛОЖКА", spectra=(), covers=()):
               f"[b]Продолжительность[/b]: {hhmmss(r.duration)}"]
     if not many:
         lines.append(f"[b]Размер раздачи[/b]: {r.size / 2**20:.1f} MB")
-    if source or not many:
-        lines.append(f"[b]Источник[/b]: {source or '—'}")
-    lines.append(f"[b]Наличие сканов в содержимом раздачи[/b]: {'да' if scans else 'нет'}")
+    lines += [f"[b]Наличие сканов в содержимом раздачи[/b]: {'да' if scans else 'нет'}", ""]
     if many:
-        lines.append("")
         for d, c in zip(r.dirs, covers):
             audio = r.album(d)
             t = r.tracks[audio[0]]
-            lines += [f'[spoiler="[{t["date"]}] {t["album"] or os.path.basename(d)}"]' if t["date"] else
-                      f'[spoiler="{t["album"] or os.path.basename(d)}"]']
+            name = t["album"] or os.path.basename(d)
+            lines.append(f'[spoiler="[{t["date"]}] {name}"]' if t["date"] else f'[spoiler="{name}"]')
             if c:
                 lines.append(f"[img=right]{c}[/img]")
             length = hhmmss(sum(r.tracks[f]["duration"] for f in audio))
-            lines += [f"[font=sans1][color=#006699][b]Total length[/b]:[/color] {length}", r.tracklist(audio),
+            lines += [*album_info(r, x, d, spectra.get(d, [])),
+                      f"[font=sans1][color=#006699][b]Total length[/b]:[/color] {length}", r.tracklist(audio),
                       "[/font][/spoiler]", ""]
-        lines.append('[spoiler="Скриншот проверки качества материала"]')
-        for d in r.dirs:
-            t = r.tracks[r.album(d)[0]]
-            lines += [f"[b]{t['album'] or os.path.basename(d)}[/b]", "[code]", r.quality(r.album(d)), "[/code]"]
     else:
-        lines += ["[b]Треклист[/b]:", r.tracklist(), "",
-                  '[spoiler="Скриншот проверки качества материала"]', "[code]", r.quality(), "[/code]"]
-    if spectra:
-        lines += ["Спектрограммы:"] + [f"[url={full}][img]{thumb}[/img][/url]" for full, thumb in spectra]
-    lines.append("[/spoiler]")
+        lines += [*album_info(r, x, r.dirs[0], spectra.get(r.dirs[0], [])), "",
+                  "[b]Треклист[/b]:", r.tracklist(), ""]
     if x["about"]:
-        lines += ["", f'[spoiler="Об {"альбомах" if many else "альбоме"}"]', x["about"], "[/spoiler]"]
+        lines += [f'[spoiler="Об {"альбомах" if many else "альбоме"}"]', x["about"], "[/spoiler]", ""]
     if x["lineup"]:
-        lines += ["", '[spoiler="Состав"]', x["lineup"], "[/spoiler]"]
-    return "\n".join(lines) + "\n"
+        lines += ['[spoiler="Состав"]', x["lineup"], "[/spoiler]"]
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def make_torrent(r, name, out):
@@ -649,10 +756,20 @@ def show_draft(r, x, before=None, title="Release"):
     row("Year", x["year"], "year")
     row("Genre", x["genre"], "genre")
     row("Country", x["country"], "country")
-    row("Source", {"yes": "WEB", "no": "CD/vinyl rip"}.get(x["web"], "") + (f"  {x['source_url']}" if x["source_url"] else ""),
-        "web", "source_url")
     row("About", x["about"], "about", lines=3)
     row("Line-up", "; ".join(l.strip() for l in x["lineup"].splitlines() if l.strip()), "lineup", lines=2)
+    section("Albums (medium, source, DR, tracks cut at 16 kHz)")
+    was = {a["folder"].strip("/"): a for a in (before or {}).get("albums", [])}
+    for d in r.dirs:
+        a = next((a for a in x.get("albums", []) if a["folder"].strip("/") == d), {})
+        audio = r.album(d)
+        cut = len(r.cut_tracks(audio))
+        text = (f"{a.get('media') or '—'} · {a.get('source') or '—'}{'  ' + a['url'] if a.get('url') else ''} · "
+                f"DR{round(sum(r.tracks[f].get('dr', 0) for f in audio) / len(audio))}"
+                f" · {max(r.tracks[f]['bits'] for f in audio)} bit" + (f" · \x1b[31m{cut} of {len(audio)} cut\x1b[0m" if cut else ""))
+        changed = before is not None and was.get(d) != a
+        out = f"  {os.path.basename(d)[:28]:<29} {text}"
+        print(f"\x1b[33m{out}\x1b[0m" if changed else out)
 
 
 def show_notes(notes, seen=()):
@@ -784,9 +901,9 @@ def publish(r, mount, work, out_root):
 
     covers = album_covers()
     cover = covers[0]  # of the topic: the first album's
-    mid = r.audio[len(r.audio) // 2]
-    spectra = [spectrogram(os.path.join(mount, f), os.path.join(work, f"spectrum-{i}.png"))
-               for i, f in enumerate(dict.fromkeys([r.audio[0], mid]), 1)]
+    # the spectrogram of each album's worst track, in the order of r.dirs
+    spectra = [spectrogram(os.path.join(mount, r.worst(r.album(d))), os.path.join(work, f"spectrum-{i}.png"))
+               for i, d in enumerate(r.dirs)]
 
     messages = [{"role": "user", "content": f"""I am making a rutracker.org release of music from my library.
 <facts>
@@ -880,7 +997,7 @@ put in additions straight away: I see the changes before they are made.""" + (
         if todo:
             print("Uploading the covers and the spectrograms...")
             images.update(zip(todo, upload_images(todo)))
-        text = post(r, x, images[cover][0] if cover else "ОБЛОЖКА", [images[f] for f in spectra],
+        text = post(r, x, images[cover][0] if cover else "ОБЛОЖКА", {d: [images[f]] for d, f in zip(r.dirs, spectra)},
                     [images[c][0] if c else "" for c in covers])
         since = time.time()
         if torrent and os.path.exists(torrent):  # of the draft before
@@ -912,6 +1029,24 @@ put in additions straight away: I see the changes before they are made.""" + (
         print("  \x1b[32m3. The path of the .torrent is in the clipboard.\x1b[0m")
         print(wait_for_rutracker(torrent, paths, since))
         return
+
+
+def hi_res_apart(bucket, dirs):
+    """The albums as one release, but the 24 bit ones (by their first track) as a release of their own:
+    rutracker takes 24 bit only in its Hi-Res forum."""
+    def bits(d):
+        for root, _, names in sorted(os.walk(os.path.join(bucket, d))):
+            for n in sorted(names):
+                if os.path.splitext(n)[1].lower() in AUDIO_EXT:
+                    out = run("ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+                              "stream=bits_per_raw_sample,bits_per_sample", "-of", "csv=p=0", os.path.join(root, n)).stdout
+                    return max([int(b) for b in re.findall(r"\d+", out)] or [0])
+        return 0
+    hi = [d for d in dirs if bits(d) > 16]
+    if not hi or len(hi) == len(dirs):
+        return [dirs]
+    print("24 bit, a Hi-Res release of their own:\n  " + "\n  ".join(hi))
+    return [[d for d in dirs if d not in hi], hi]
 
 
 def picard_albums(bucket, albums):
@@ -946,7 +1081,7 @@ def main():
     if len(dirs) > 1:
         print("Albums:\n  " + "\n  ".join(dirs))
         if ask(f"One release with all {len(dirs)} albums? [y/N] ").lower() == "y":
-            groups = [dirs]
+            groups = hi_res_apart(bucket, dirs)
     for g in groups:
         release(bucket, g, os.path.join(DOWNLOADS, "rutracker"))
     done("Done.")
