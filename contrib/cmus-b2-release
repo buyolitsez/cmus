@@ -340,6 +340,9 @@ CHANGES = {  # what Claude may change, when I ask it to
                   "and leave out of the release; the bucket keeps them hidden for 30 days; do it yourself when I ask "
                   "for it, do not ask me to delete files",
                   {"path": "the file, as in the facts"}),
+    "left_out": ("album folders to leave out of this release (my library keeps them), e.g. the ones auCDtect or "
+                 "the cut at 15-17 kHz shows made from MP3; when I ask for it, and in the notes offer it for such albums",
+                 {"folder": "the album folder, as in the facts"}),
     "additions": ("files of my Downloads folder (a cover I found, a scan) to put into an album folder of my library "
                   "and the release; do it yourself when a file there is what a folder lacks, do not ask me to copy "
                   "files",
@@ -591,6 +594,14 @@ class Release:
                         there = os.path.exists(os.path.join(self.mount, os.path.dirname(f), ref))
                         lines.append(f"  refers to {ref}: {'there' if there else 'NOT in the folder'}")
         return "\n".join(lines)
+
+    def leave_out(self, dirs):
+        """Drops these album folders from the release."""
+        self.dirs = [d for d in self.dirs if d not in dirs]
+        self.files = [f for f in self.files if any(f.startswith(d + "/") for d in self.dirs)]
+        self.audio = [f for f in self.audio if f in self.files]
+        self.tracks = {f: self.tracks[f] for f in self.audio}
+        self.size = sum(os.path.getsize(os.path.join(self.mount, f)) for f in self.files)
 
     def album(self, d):
         """The tracks of an album folder of the release (with its disc folders)."""
@@ -869,6 +880,13 @@ def show_changes(r, x):
              and os.path.dirname(os.path.realpath(a["source"])) == os.path.realpath(DOWNLOADS)
              and any(a["path"].strip("/").startswith(d + "/") for d in r.dirs) and ".." not in a["path"]
              and a["path"].strip("/") not in r.files]
+    dropped = [d for d in dict.fromkeys(a["folder"].strip("/") for a in x.get("left_out", [])) if d in r.dirs]
+    if len(dropped) == len(r.dirs):  # not all of them: that is no release
+        dropped = []
+    if dropped:
+        section("Leave out of the release (the library keeps them)")
+        for d in dropped:
+            print(wrap(f"{old}{d.removeprefix(os.path.commonpath(r.dirs) + '/') if len(r.dirs) > 1 else d}\x1b[0m"))
     if names:
         section("Renames (likes, playlists, history and ratings move along)")
         for n in names:
@@ -881,7 +899,7 @@ def show_changes(r, x):
         section("Add to the albums")
         for a in added:
             print(wrap(f"{os.path.basename(a['source'])} → {new}{a['path'].strip('/').removeprefix(os.path.commonpath(r.dirs) + '/')}\x1b[0m"))
-    return edits, names, gone, added
+    return edits, names, gone, added, dropped
 
 
 def delete_files(r, gone):
@@ -1005,7 +1023,7 @@ put in additions straight away: I see the changes before they are made.""" + (
             show_draft(r, x, before, "Release (the draft from the last time: the files did not change)" if cached else "Release")
             cached = False
             points = show_notes(x["notes"], seen)
-            edits, names, gone, added = show_changes(r, x)
+            edits, names, gone, added, dropped = show_changes(r, x)
             section("")
             answer = ask("Enter: accept · q: quit · numbers of Claude's points to fix (1 3) · or write to Claude: ")
             if answer.lower() == "q":
@@ -1027,6 +1045,17 @@ put in additions straight away: I see the changes before they are made.""" + (
             before, x, answer = x, ask_claude(messages, True), ""
             continue
 
+        if dropped:
+            keep = [i for i, d in enumerate(r.dirs) if d not in dropped]
+            covers, spectra = [covers[i] for i in keep], [spectra[i] for i in keep]
+            cover = covers[0]
+            r.leave_out(dropped)
+            inside = lambda f: any(f.startswith(d + "/") for d in r.dirs)
+            gone = [f for f in gone if f in r.files]
+            added = [a for a in added if inside(a["path"].strip("/"))]
+            names = [n for n in names if inside(n["path"].strip("/")) or n["path"].strip("/") in r.dirs]
+            edits = [e for e in edits if any(e["path"].strip("/") == d or e["path"].strip("/").startswith(d + "/") for d in r.dirs)
+                     or any(d.startswith(e["path"].strip("/") + "/") for d in r.dirs)]
         if edits:
             apply_edits(r, edits)
         if gone:
