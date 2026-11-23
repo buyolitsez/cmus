@@ -652,12 +652,14 @@ def album_info(r, x, d, spectra):
     lines = [f"[b]Носитель[/b]: {a.get('media') or '—'}", f"[b]Источник[/b]: {source or '—'}",
              '[spoiler="Лог DR"][pre]', r.dr_log(d), "[/pre][/spoiler]",
              '[spoiler="Проверка качества"][pre]', r.quality(r.album(d)), "[/pre]"]
+    lines += [f"[url={full}][img]{thumb}[/img][/url]" for full, thumb in spectra] + ["[/spoiler]"]
     reports = [r.tracks[f].get("aucdtect") for f in r.album(d)]
     if all(reports):
-        lines += ['[spoiler="Лог auCDtect"][pre]', "\n\n".join(reports), "[/pre][/spoiler]"]
-    for full, thumb in spectra:
-        lines.append(f"[url={full}][img]{thumb}[/img][/url]")
-    return lines + ["[/spoiler]"]
+        # auCDtect's banner once, then what it said of each track
+        head = reports[0].split("Processing file")[0].strip()
+        tracks = ["Processing file" + t.split("Processing file", 1)[1] if "Processing file" in t else t for t in reports]
+        lines += ['[spoiler="Лог auCDtect"][pre]', "\n\n".join(filter(None, [head] + tracks)), "[/pre][/spoiler]"]
+    return lines
 
 
 def post(r, x, cover="ОБЛОЖКА", spectra=None, covers=()):
