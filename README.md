@@ -143,7 +143,7 @@ Adding albums from a torrent, YouTube Music or Soulseek: `:bind common T shell f
 in the torrents view) opens a window where Enter takes the newest `.torrent` with music in `~/Downloads`, or you type a
 YouTube Music search (an artist's exact name gives their discography) or paste a link to an album, playlist or artist.
 Tab switches the search to Soulseek, through `slskd` (`contrib/slskd.service`, local only): it shows the folders found,
-FLAC first, then the peers with a free upload slot; the first search asks for the Soulseek account (a free name makes a
+FLAC first, then the peers with a free upload slot, up to 100 of each format (`f` shows one format at a time); the first search asks for the Soulseek account (a free name makes a
 new one) and keeps it in `~/.config/cmus-b2/slskd.env`. slskd shares the audio files and covers of the bucket through
 its own mount without a cache (`contrib/rclone-b2music-slsk.service`; 3 uploads, 2 MB/s, re-scanned monthly); the
 torrents view shows what it sent, and it counts to the monthly limit of seeding.
