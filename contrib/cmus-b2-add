@@ -790,7 +790,13 @@ def run_job(d):
 def jobs():
     """The background downloads, running ones and those that ended in the last hour: (source, album folders, status)."""
     out = []
-    for d in sorted(glob.glob(os.path.join(JOBS, "*/")), key=os.path.getmtime):
+    def started(d):  # job.json is written once; the folder's own time changes with every file the job writes
+        try:
+            return os.path.getmtime(os.path.join(d, "job.json"))
+        except OSError:
+            return 0
+
+    for d in sorted(glob.glob(os.path.join(JOBS, "*/")), key=started):
         try:
             job = json.load(open(os.path.join(d, "job.json"), encoding="utf-8"))
             status, ended = open(os.path.join(d, "status"), encoding="utf-8").read(), os.path.getmtime(os.path.join(d, "status"))
