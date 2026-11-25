@@ -188,13 +188,15 @@ class Node:
         return [self] if self.index is not None else [f for c in self.children.values() for f in c.files()]
 
 
-def pick(scr, title, files, fmt=size, ordered=False, play=None, at=None, enter="download marked", unit="files", keys=None):
+def pick(scr, title, files, fmt=size, ordered=False, play=None, at=None, enter="download marked", unit="files", keys=None,
+         kind=None):
     """Tree of folders and files: arrows move and open folders, Space marks.
     Returns the indices of the marked files, or None. fmt shows the third field of files; ordered keeps
     the order of files instead of sorting by name. play(indices) plays files (a folder, or a file and
     the ones after it in its folder), play([]) stops; it returns what to show in the title. at is a path in the
     tree to open and start on; enter names what Enter does and unit what the leaves are. keys maps more keys
-    to (label, run): run(indices) gets the marked files, or the ones under the cursor, outside curses."""
+    to (label, run): run(indices) gets the marked files, or the ones under the cursor, outside curses. kind(name) gives
+    a top folder's kind, such as its format, or None: f then cycles through showing only the folders of one kind."""
     root = Node("")
     for i, path, n in files:
         node = root
@@ -213,9 +215,20 @@ def pick(scr, title, files, fmt=size, ordered=False, play=None, at=None, enter="
         start = start.children[part]
         start.open = start.index is None
 
+    kinds = [None]  # None shows all
+    if kind:
+        counts = {}
+        for name in root.children:
+            if kind(name):
+                counts[kind(name)] = counts.get(kind(name), 0) + 1
+        kinds += sorted(counts, key=counts.get, reverse=True)
+    shown = None
+
     def visible(node):
         for c in node.children.values() if ordered else sorted(
                 node.children.values(), key=lambda c: (c.index is not None, c.name.casefold())):
+            if shown and node is root and kind(c.name) != shown:
+                continue
             yield c
             if c.open:
                 yield from visible(c)
@@ -235,7 +248,9 @@ def pick(scr, title, files, fmt=size, ordered=False, play=None, at=None, enter="
         top = min(max(top, cur - page + 1), cur)
         marked = [f for f in root.files() if f.marked]
         scr.erase()
-        scr.addnstr(0, 0, f"{title}   marked: {len(marked)} {unit}, {fmt(sum(f.size for f in marked))}   {playing}", w - 1, curses.A_BOLD)
+        only = f"   only {shown} ({sum(c.parent is root for c in rows)})" if shown else ""
+        scr.addnstr(0, 0, f"{title}{only}   marked: {len(marked)} {unit}, {fmt(sum(f.size for f in marked))}   {playing}",
+                    w - 1, curses.A_BOLD)
         for y, node in enumerate(rows[top:top + page], 1):
             fl = node.files()
             box = "[x]" if all(f.marked for f in fl) else "[-]" if any(f.marked for f in fl) else "[ ]"
@@ -245,6 +260,8 @@ def pick(scr, title, files, fmt=size, ordered=False, play=None, at=None, enter="
             text = line[:max(0, w - len(sz) - 3)].ljust(w - len(sz) - 3) + " " + sz
             scr.addnstr(y, 0, text, w - 1, curses.A_REVERSE if top + y - 1 == cur else 0)
         more = ("  p play  s stop" if play else "") + "".join(f"  {k} {label}" for k, (label, _) in (keys or {}).items())
+        if len(kinds) > 2:
+            more += f"  f show {kinds[(kinds.index(shown) + 1) % len(kinds)] or 'all'}"
         scr.addnstr(h - 1, 0, f"↑↓ move  → open  ← close  Space mark  a all{more}  Enter {enter}  q quit", w - 1, curses.A_DIM)
         k = scr.get_wch()
         node = rows[cur] if rows else None
@@ -270,8 +287,11 @@ def pick(scr, title, files, fmt=size, ordered=False, play=None, at=None, enter="
             for f in fl:
                 f.marked = on
             cur += 1
+        elif k == "f" and len(kinds) > 2:
+            shown = kinds[(kinds.index(shown) + 1) % len(kinds)]
+            cur = top = 0
         elif k == "a":
-            fl = root.files()
+            fl = [f for c in rows if c.parent is root for f in c.files()]
             on = not all(f.marked for f in fl)
             for f in fl:
                 f.marked = on

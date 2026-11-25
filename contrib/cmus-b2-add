@@ -610,7 +610,8 @@ def add_soulseek(query):
         raise ValueError(f"Nothing found on Soulseek for {query}")
     files = [(x["name"], x["user"], f) for x in folders for f in x["files"]]
     picked = curses.wrapper(pick, f"Soulseek: {query}",
-                            [(i, f"{name}/{f['rel']}", f["size"]) for i, (name, _, f) in enumerate(files)], size, True)
+                            [(i, f"{name}/{f['rel']}", f["size"]) for i, (name, _, f) in enumerate(files)], size, True,
+                            kind=lambda name: name.split()[0] if "+" not in name.split()[0] else None)
     if not picked:
         return None
     chosen = {}
