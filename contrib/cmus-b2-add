@@ -492,7 +492,7 @@ def slsk_login():
 
 
 def slsk_folders(query):
-    """Folders with audio found on Soulseek, FLAC first, then the peers with a free upload slot, a rip log, a short
+    """Folders with audio found on Soulseek, up to 100 of each format, FLAC first, then the peers with a free upload slot, a rip log, a short
     queue and fast uploads: dicts with name (unique, for the list), user, folder, kind ("FLAC 16/44.1 log cue": a .log
     next to a FLAC is mostly a CD ripper's, EAC or XLD, so the files are from a CD and not made from an MP3),
     queue (the peer's queue, None with a free upload slot) and files. A folder is an album folder (CD1/Disc 2
@@ -525,10 +525,13 @@ def slsk_folders(query):
         return (exts != {".flac"}, not r["hasFreeUploadSlot"], "log" not in extras.get((user, d), ()),
                 r["queueLength"], -r["uploadSpeed"])
 
-    out, names = [], set()
-    for (user, d), (r, files) in sorted(found.items(), key=rank)[:100]:
+    out, names, per_format = [], set(), {}
+    for (user, d), (r, files) in sorted(found.items(), key=rank):
         audio = [f for f in files if os.path.splitext(f["rel"])[1].lower() in AUDIO_EXT]
         kind = "+".join(sorted({os.path.splitext(f["rel"])[1][1:].upper() for f in audio}))
+        per_format[kind] = per_format.get(kind, 0) + 1
+        if per_format[kind] > 100:  # the best 100 of each format, so a filter by format on the phone has some
+            continue
         f = audio[0]
         if f.get("bitDepth") and f.get("sampleRate"):
             kind += f" {f['bitDepth']}/{f['sampleRate'] / 1000:g}"
