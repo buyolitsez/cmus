@@ -270,10 +270,10 @@ def resume(h, skip_finished=False):
     if h["track"] not in by_id:
         cmus("-C", f"echo Not in the catalog: {h['track']}")
         return 1
-    save_shared(h.get("past", []) + h.get("queue", [h["track"]]))
     key, t = by_id[h["track"]]
     if skip_finished and finished(h, t["duration"]):
         return 1
+    save_shared(h.get("past", []) + h.get("queue", [h["track"]]))
     filename = file_of(key, bucket, download)
     position = position_now(h, t["duration"])
     cmus("-C", f"player-play {filename}")
