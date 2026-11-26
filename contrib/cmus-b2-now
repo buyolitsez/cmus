@@ -48,6 +48,11 @@ def position_now(h, duration):
     return moved if h.get("playing") and moved < duration else h["position_ms"] / 1000
 
 
+def finished(h, duration):
+    """Paused at the end of its track: the phone's queue ran out, nothing there to go on with."""
+    return not h.get("playing") and h["position_ms"] / 1000 >= duration - 2
+
+
 def album_of(tracks, tid):
     d = os.path.dirname(next(t["path"] for i, _, t, _ in tracks if i == tid))
     return [i for i, _, t, _ in tracks if os.path.dirname(t["path"]) == d]
@@ -175,7 +180,7 @@ def hook(args):
     # Play on the track cmus stood paused on, not a newly chosen one: the phone's queue, when it played later, goes on.
     if status == "playing" and prev_pid == pid and prev_status in ("paused", "stopped") and prev_file == file:
         h = fetch()
-        if h and h.get("device") != DEVICE and resume(h) == 0:
+        if h and h.get("device") != DEVICE and resume(h, skip_finished=True) == 0:
             return
     if status == "playing" or (prev_pid == pid and prev_status == "playing"):
         key = key_of(file, (q.get("set bucket_dir"), q.get("set download_dir")))
@@ -199,7 +204,7 @@ def remote_at(h, tracks):
     if not queue or h["track"] not in tracks:
         return None
     pos = (h["position_ms"] + (max(0, time.time() * 1000 - h["time"]) if h.get("playing") else 0)) / 1000
-    if pos > queue[0][2] + 30:
+    if pos > queue[0][2] + 30 or finished(h, queue[0][2]):
         return None
     for t in queue:
         if pos < t[2] or not h.get("playing"):
@@ -254,7 +259,7 @@ def file_of(key, bucket, download):
     return local if local and os.path.exists(local) else os.path.join(bucket, key)
 
 
-def resume(h):
+def resume(h, skip_finished=False):
     if not h:
         cmus("-C", "echo Nothing to continue")
         return 1
@@ -265,8 +270,10 @@ def resume(h):
     if h["track"] not in by_id:
         cmus("-C", f"echo Not in the catalog: {h['track']}")
         return 1
-    save_shared(h.get("past", []) + h.get("queue", [h["track"]]))
     key, t = by_id[h["track"]]
+    if skip_finished and finished(h, t["duration"]):
+        return 1
+    save_shared(h.get("past", []) + h.get("queue", [h["track"]]))
     filename = file_of(key, bucket, download)
     position = position_now(h, t["duration"])
     cmus("-C", f"player-play {filename}")
