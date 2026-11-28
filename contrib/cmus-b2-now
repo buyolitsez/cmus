@@ -7,8 +7,9 @@ the position there. Hook it into cmus by adding
 to the status_display_program script: on play, pause and track change of a
 bucket track it writes the file. While cmus does not play, its status line shows
 what the phone plays ("cmus-b2-now --watch"), and play on the same paused track
-goes on with what the phone played instead. A track heard for half its length or 4 minutes
-goes into state/history.tsv, marked with this computer, as the phone counts its plays.
+goes on with what the phone played instead. A track chosen here outside the phone's queue
+drops what is left of it from the play queue, so cmus goes on with the chosen album.
+A track heard for half its length or 4 minutes goes into state/history.tsv, marked with this computer, as the phone counts its plays.
 
 "cmus-b2-now --resume" does the same at once: it plays the track the file names,
 from where it stopped, and puts the rest of that queue into the cmus play queue:
@@ -32,6 +33,8 @@ LISTEN = os.path.join(OUT, "now-playing-listen.json")
 PENDING = os.path.join(OUT, "history-pending.tsv")
 # the whole shared queue as last written or taken over here, for the tracks played before the current one
 SHARED = os.path.join(OUT, "now-playing-shared.json")
+# the files a resume put into the cmus play queue
+RESUMED = os.path.join(OUT, "now-playing-resumed.json")
 QUEUE_MAX, PAST_MAX = 200, 100  # as in the app
 DEVICE = "mac" if sys.platform == "darwin" else "arch"
 
@@ -69,32 +72,51 @@ def save_shared(ids):
         json.dump(ids, f)
 
 
+def load(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (FileNotFoundError, ValueError):
+        return []
+
+
 def played(tid, tracks):
     """The tracks before tid: those of the shared queue when tid is in it, else those of its album."""
-    try:
-        with open(SHARED) as f:
-            shared = json.load(f)
-    except (FileNotFoundError, ValueError):
-        shared = []
+    shared = load(SHARED)
     if tid in shared:
         return shared[:shared.index(tid)][-PAST_MAX:]
     album = album_of(tracks, tid)
     return album[:album.index(tid)]
 
 
-def upcoming(tid, roots, tracks):
-    """The tracks after tid as cmus will play them: its play queue, then the rest of the album."""
+def play_queue():
     path = os.path.join(OUT, "now-playing-queue")
     if os.path.exists(path):
         os.remove(path)
     cmus("-C", f"save -q {path}")
     try:
         with open(path) as f:
-            files = f.read().splitlines()
+            return f.read().splitlines()
     except FileNotFoundError:
-        files = []
+        return []
+
+
+def leave_resumed(tid, file):
+    """A track chosen here away from the resumed queue: what is left of that queue in the play queue goes,
+    so cmus goes on with the chosen album. A play queue changed by hand since stays."""
+    resumed = load(RESUMED)
+    if not resumed or file in resumed or tid in load(SHARED):
+        return
+    files = play_queue()
+    if files and files == resumed[-len(files):]:
+        cmus("-c", "-q")
+    os.remove(RESUMED)
+
+
+def upcoming(tid, roots, tracks):
+    """The tracks after tid as cmus will play them: its play queue, then the rest of the album."""
     ids = {k: i for i, k, _, _ in tracks}
-    return [ids[k] for k in (key_of(f, roots) for f in files) if k in ids] + album_rest(tracks, tid)
+    return [ids[k] for k in (key_of(f, roots) for f in play_queue()) if k in ids] + album_rest(tracks, tid)
 
 
 def write(past, queue, position, playing):
@@ -188,6 +210,8 @@ def hook(args):
         tid, t = next(((tid, t) for tid, k, t, _ in tracks if k == key), (None, None))
         listen(tid, t and t["duration"], status == "playing")
         if tid:
+            if status == "playing":
+                leave_resumed(tid, file)
             roots = (q.get("set bucket_dir"), q.get("set download_dir"))
             write(played(tid, tracks), [tid] + upcoming(tid, roots, tracks), float(q.get("position", 0)), status == "playing")
     if status in ("paused", "stopped"):
@@ -293,8 +317,11 @@ def resume(h, skip_finished=False):
     elif album and rest[-len(album):] == album:
         rest = rest[:-len(album)]
     cmus("-c", "-q")
-    if rest:
-        cmus("-q", *(file_of(by_id[i][0], bucket, download) for i in rest))
+    files = [file_of(by_id[i][0], bucket, download) for i in rest]
+    if files:
+        cmus("-q", *files)
+    with open(RESUMED, "w") as f:
+        json.dump(files, f)
     return 0
 
 
