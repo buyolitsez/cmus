@@ -1361,7 +1361,7 @@ static void remote_now_format(struct gbuf *fmt, int pos)
 static void do_update_statusline(void)
 {
 	struct fp_len len;
-	int pos = pos;
+	int pos = player_info.pos;
 	int duration = player_info.ti ? player_info.ti->duration : 0;
 
 	if (remote_now_active()) {
